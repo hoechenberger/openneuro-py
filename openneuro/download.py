@@ -40,21 +40,51 @@ def _download_files(*,
 
         outfile = target_dir / filename
         outfile.parent.mkdir(parents=True, exist_ok=True)
+        headers = {}
 
-        response = requests.get(url=url, stream=True)
-        if response.status_code != 200:
+        if outfile.exists():
+            local_file_size = outfile.stat().st_size
+
+        # Check if we need to resume a download
+        if outfile.exists() and local_file_size == file_size:
+            # Download complete, skip.
+            tqdm.write(f'Skipping {filename.name}: already downloaded.')
+            continue
+        elif outfile.exists() and local_file_size < file_size:
+            # Download incomplete, resume.
+            desc = f'Resuming {filename.name}'
+            initial = local_file_size
+            headers['Range'] = f'bytes={local_file_size}-'
+            mode = 'ab'
+        elif outfile.exists():
+            # Local file is larger than remote – overwrite.
+            desc = f'Re-downloading {filename.name}: file size mismatch.'
+            initial = 0
+            mode = 'wb'
+        else:
+            desc = filename.name
+            initial = 0
+            mode = 'wb'
+
+        response = requests.get(url=url, headers=headers, stream=True)
+        if response.status_code not in (200, 206):  # OK, Partial Content
             raise RuntimeError(f'Error {response.status_code} when trying to '
                                f'download {outfile}.')
 
-        with tqdm.wrapattr(open(outfile, 'wb'),
+        with tqdm.wrapattr(open(outfile, mode=mode),
                            'write',
                            miniters=1,
-                           desc=filename.name,
+                           initial=initial,
+                           desc=desc,
                            dynamic_ncols=True,
                            total=file_size) as f:
             chunk_size = 4096
             for chunk in response.iter_content(chunk_size=chunk_size):
                 f.write(chunk)
+
+        # Check the file was completely downloaded.
+        f.flush()
+        assert outfile.stat().st_size == file_size
 
 
 @click.command()
