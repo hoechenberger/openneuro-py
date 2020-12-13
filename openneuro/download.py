@@ -44,6 +44,8 @@ def _download_files(*,
 
         if outfile.exists():
             local_file_size = outfile.stat().st_size
+        else:
+            local_file_size = None
 
         # Check if we need to resume a download
         if outfile.exists() and local_file_size == file_size:
