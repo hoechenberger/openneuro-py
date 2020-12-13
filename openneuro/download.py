@@ -1,5 +1,6 @@
 from pathlib import Path
 import requests
+import hashlib
 from typing import Optional, Tuple
 
 from tqdm import tqdm
@@ -71,6 +72,8 @@ def _download_files(*,
             raise RuntimeError(f'Error {response.status_code} when trying to '
                                f'download {outfile}.')
 
+        hash = hashlib.sha256()
+
         with tqdm.wrapattr(open(outfile, mode=mode),
                            'write',
                            miniters=1,
@@ -81,6 +84,9 @@ def _download_files(*,
             chunk_size = 4096
             for chunk in response.iter_content(chunk_size=chunk_size):
                 f.write(chunk)
+                hash.update(chunk)
+
+            tqdm.write(f'SHA256 hash: {hash.hexdigest()}')
 
         # Check the file was completely downloaded.
         f.flush()
