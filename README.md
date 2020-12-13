@@ -34,3 +34,6 @@ openneuro-py download --dataset=ds000246 \
                       --include=sub-0001/meg/sub-0001_coordsystem.json \
                       --include=sub-0001/meg/sub-0001_acq-LPA_photo.jpg
 ```
+
+Interrupted downloads will resume where they left off when you run the command
+again.
