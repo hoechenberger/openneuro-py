@@ -45,7 +45,7 @@ def _download_files(*,
         if outfile.exists():
             local_file_size = outfile.stat().st_size
         else:
-            local_file_size = None
+            local_file_size = 0
 
         # Check if we need to resume a download
         if outfile.exists() and local_file_size == file_size:
@@ -55,17 +55,15 @@ def _download_files(*,
         elif outfile.exists() and local_file_size < file_size:
             # Download incomplete, resume.
             desc = f'Resuming {filename.name}'
-            initial = local_file_size
             headers['Range'] = f'bytes={local_file_size}-'
             mode = 'ab'
         elif outfile.exists():
             # Local file is larger than remote – overwrite.
             desc = f'Re-downloading {filename.name}: file size mismatch.'
-            initial = 0
             mode = 'wb'
         else:
+            # File doesn't exist locally, download entirely.
             desc = filename.name
-            initial = 0
             mode = 'wb'
 
         response = requests.get(url=url, headers=headers, stream=True)
@@ -76,7 +74,7 @@ def _download_files(*,
         with tqdm.wrapattr(open(outfile, mode=mode),
                            'write',
                            miniters=1,
-                           initial=initial,
+                           initial=local_file_size,
                            desc=desc,
                            dynamic_ncols=True,
                            total=file_size) as f:
