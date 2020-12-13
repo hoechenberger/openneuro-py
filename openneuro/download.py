@@ -31,7 +31,8 @@ def _get_download_metadata(*,
 
 def _download_files(*,
                     target_dir: Path,
-                    files: dict):
+                    files: dict,
+                    verify_hash: bool):
     """Download individual files.
     """
     for file in files:
@@ -84,9 +85,11 @@ def _download_files(*,
             chunk_size = 4096
             for chunk in response.iter_content(chunk_size=chunk_size):
                 f.write(chunk)
-                hash.update(chunk)
+                if verify_hash:
+                    hash.update(chunk)
 
-            tqdm.write(f'SHA256 hash: {hash.hexdigest()}')
+            if verify_hash:
+                tqdm.write(f'SHA256 hash: {hash.hexdigest()}')
 
         # Check the file was completely downloaded.
         f.flush()
@@ -103,12 +106,15 @@ def _download_files(*,
 @click.option('--exclude', multiple=True,
               help='Exclude the specified file or directory. Can be passed '
                    'multiple times.')
+@click.option('--verify_hash', type=bool, default=False, show_default=True,
+              help='Whether to print the SHA256 hash of each downloaded file.')
 def download(*,
              dataset: str,
              tag: Optional[str] = None,
              target_dir: Optional[str] = None,
              include: Optional[Tuple[str]] = None,
-             exclude: Optional[Tuple[str]] = None):
+             exclude: Optional[Tuple[str]] = None,
+             verify_hash: bool = False):
     """Download datasets from OpenNeuro.\f
 
     Parameters
@@ -126,6 +132,8 @@ def download(*,
         will be retrieved.
     exclude
         Files and directories to exclude from downloading.
+    verify_hash
+        Whether to calculate and print the SHA256 hash of each downloaded file.
     """
     if target_dir is None:
         target_dir = Path(dataset)
@@ -154,4 +162,5 @@ def download(*,
                 not any(filename.startswith(e) for e in exclude)):
             files.append(file)
 
-    _download_files(target_dir=target_dir, files=files)
+    _download_files(target_dir=target_dir, files=files,
+                    verify_hash=verify_hash)
