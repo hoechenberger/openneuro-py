@@ -1,5 +1,5 @@
 from pathlib import Path
-import requests
+import httpx
 import hashlib
 from typing import Optional, Tuple
 
@@ -20,7 +20,7 @@ def _get_download_metadata(*,
     else:
         url = f'{base_url}crn/datasets/{dataset_id}/snapshots/{tag}/download'
 
-    response = requests.get(url)
+    response = httpx.get(url)
     if response.status_code != 200:
         raise RuntimeError(f'Error {response.status_code} when trying to '
                            f'fetch metadata.')
@@ -32,7 +32,7 @@ def _get_download_metadata(*,
 def _download_files(*,
                     target_dir: Path,
                     files: dict,
-                    verify_hash: bool):
+                    verify_hash: bool) -> None:
     """Download individual files.
     """
     for file in files:
@@ -52,7 +52,7 @@ def _download_files(*,
         # Check if we need to resume a download
         if outfile.exists() and local_file_size == file_size:
             # Download complete, skip.
-            tqdm.write(f'Skipping {filename.name}: already downloaded.')
+            print(f'Skipping {filename.name}: already downloaded.')
             continue
         elif outfile.exists() and local_file_size < file_size:
             # Download incomplete, resume.
@@ -68,32 +68,31 @@ def _download_files(*,
             desc = filename.name
             mode = 'wb'
 
-        response = requests.get(url=url, headers=headers, stream=True)
-        if response.status_code not in (200, 206):  # OK, Partial Content
-            raise RuntimeError(f'Error {response.status_code} when trying to '
-                               f'download {outfile}.')
+        with httpx.stream('GET', url=url, headers=headers) as response:
+            if response.status_code not in (200, 206):  # OK, Partial Content
+                raise RuntimeError(f'Error {response.status_code} when trying '
+                                   f'to download {outfile}.')
 
-        hash = hashlib.sha256()
+            hash = hashlib.sha256()
+            with tqdm.wrapattr(open(outfile, mode=mode),
+                               'write',
+                               miniters=1,
+                               initial=local_file_size,
+                               desc=desc,
+                               dynamic_ncols=True,
+                               total=file_size) as f:
 
-        with tqdm.wrapattr(open(outfile, mode=mode),
-                           'write',
-                           miniters=1,
-                           initial=local_file_size,
-                           desc=desc,
-                           dynamic_ncols=True,
-                           total=file_size) as f:
-            chunk_size = 4096
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                f.write(chunk)
+                for chunk in response.iter_bytes():
+                    f.write(chunk)
+                    if verify_hash:
+                        hash.update(chunk)
+
                 if verify_hash:
-                    hash.update(chunk)
+                    tqdm.write(f'SHA256 hash: {hash.hexdigest()}')
 
-            if verify_hash:
-                tqdm.write(f'SHA256 hash: {hash.hexdigest()}')
-
-        # Check the file was completely downloaded.
-        f.flush()
-        assert outfile.stat().st_size == file_size
+            # Check the file was completely downloaded.
+            f.flush()
+            assert outfile.stat().st_size == file_size
 
 
 @click.command()
@@ -114,7 +113,7 @@ def download(*,
              target_dir: Optional[str] = None,
              include: Optional[Tuple[str]] = None,
              exclude: Optional[Tuple[str]] = None,
-             verify_hash: bool = False):
+             verify_hash: bool = False) -> None:
     """Download datasets from OpenNeuro.\f
 
     Parameters
@@ -147,7 +146,7 @@ def download(*,
 
     files = []
     for file in metadata['files']:
-        filename: str = file['filename']
+        filename: str = file['filename']  # TODO properly define metadata type
 
         # Always include essential BIDS files.
         if filename in ('dataset_description.json',
@@ -157,8 +156,7 @@ def download(*,
             files.append(file)
             continue
 
-        if ((not include or
-                any(filename.startswith(i) for i in include)) and
+        if ((not include or any(filename.startswith(i) for i in include)) and
                 not any(filename.startswith(e) for e in exclude)):
             files.append(file)
 
