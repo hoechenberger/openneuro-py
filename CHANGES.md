@@ -1,5 +1,11 @@
 # Changelog
 
+## 2020.5
+
+- Raise an exception if user `--include`s a path that doesn't exist in the
+  dataset. Previously, we would silently ignore this issue.
+- Optimze checks whether we need to resume a download or not.
+
 ## 2020.4
 
 - Don't rely on OpenNeuro API-reported file sizes anymore, but trust the
