@@ -1,11 +1,12 @@
-import time
-from pathlib import Path
-import httpx
 import hashlib
-from typing import Optional, Tuple
+import asyncio
+from pathlib import Path
+from typing import Optional, Iterable, Union
 
-from tqdm import tqdm
+import httpx
+from tqdm.asyncio import tqdm
 import click
+import aiofiles
 
 from .config import default_base_url
 
@@ -34,7 +35,7 @@ def _get_download_metadata(*,
         return response_json
     elif response.status_code in allowed_retry_codes and max_retries > 0:
         tqdm.write(f'Error {response.status_code}, retrying …')
-        time.sleep(retry_backoff)
+        asyncio.sleep(retry_backoff)
         max_retries -= 1
         retry_backoff *= 2
         _get_download_metadata(base_url=base_url, dataset_id=dataset_id,
@@ -45,14 +46,15 @@ def _get_download_metadata(*,
                            f'fetch metadata.')
 
 
-def _download_file(*,
-                   url: str,
-                   api_file_size: int,
-                   outfile: Path,
-                   verify_hash: bool,
-                   verify_size: bool,
-                   max_retries: int,
-                   retry_backoff: float) -> None:
+async def _download_file(*,
+                         url: str,
+                         api_file_size: int,
+                         outfile: Path,
+                         verify_hash: bool,
+                         verify_size: bool,
+                         max_retries: int,
+                         retry_backoff: float,
+                         semaphore: asyncio.Semaphore) -> None:
     """Download an individual file.
     """
     if outfile.exists():
@@ -63,13 +65,15 @@ def _download_file(*,
     # Check if we need to resume a download
     # The file sizes provided via the API often do not match the sizes reported
     # by the HTTP server. Rely on the sizes reported by the HTTP server.
-    with httpx.stream('GET', url=url) as response:
-        try:
-            remote_file_size = int(response.headers['content-length'])
-        except KeyError:
-            # The server doesn't always set a Conent-Length header.
-            response.read()
-            remote_file_size = len(response.content)
+    async with semaphore:
+        async with httpx.AsyncClient() as client:
+            async with client.stream('GET', url=url) as response:
+                try:
+                    remote_file_size = int(response.headers['content-length'])
+                except KeyError:
+                    # The server doesn't always set a Conent-Length header.
+                    response_content = await response.aread()
+                    remote_file_size = len(response_content)
 
     headers = {}
     if outfile.exists() and local_file_size == remote_file_size:
@@ -90,58 +94,74 @@ def _download_file(*,
         desc = outfile.name
         mode = 'wb'
 
-    with httpx.stream('GET', url=url, headers=headers) as response:
-        if 200 <= response.status_code <= 299:
-            pass  # All good!
-        elif response.status_code in allowed_retry_codes and max_retries > 0:
-            tqdm.write(f'Error {response.status_code}, retrying …')
-            time.sleep(retry_backoff)
-            max_retries -= 1
-            retry_backoff *= 2
-            _download_file(url=url, remote_file_size=remote_file_size,
-                           outfile=outfile, verify_hash=verify_hash,
-                           verify_size=verify_size, max_retries=max_retries,
-                           retry_backoff=retry_backoff)
-        else:
-            raise RuntimeError(f'Error {response.status_code} when trying '
-                               f'to download {outfile} from {url}')
+    async with semaphore:
+        async with httpx.AsyncClient() as client:
+            async with (
+                client.stream('GET', url=url, headers=headers)
+            ) as response:
+                if 200 <= response.status_code <= 299:
+                    pass  # All good!
+                elif (response.status_code in allowed_retry_codes and
+                      max_retries > 0):
+                    tqdm.write(f'Error {response.status_code}, retrying …')
+                    await asyncio.sleep(retry_backoff)
+                    max_retries -= 1
+                    retry_backoff *= 2
+                    await _download_file(url=url,
+                                         api_file_size=api_file_size,
+                                         outfile=outfile,
+                                         verify_hash=verify_hash,
+                                         verify_size=verify_size,
+                                         max_retries=max_retries,
+                                         retry_backoff=retry_backoff,
+                                         semaphore=semaphore)
+                else:
+                    raise RuntimeError(
+                        f'Error {response.status_code} when trying '
+                        f'to download {outfile} from {url}')
 
-        hash = hashlib.sha256()
-        with tqdm.wrapattr(open(outfile, mode=mode),
-                           'write',
-                           miniters=1,
-                           initial=local_file_size,
-                           desc=desc,
-                           dynamic_ncols=True,
-                           total=remote_file_size) as f:
+                hash = hashlib.sha256()
 
-            for chunk in response.iter_bytes():
-                f.write(chunk)
-                if verify_hash:
-                    hash.update(chunk)
+                async with aiofiles.open(outfile, mode=mode) as f:
+                    with tqdm(desc=desc, initial=local_file_size,
+                              total=remote_file_size, unit='B',
+                              unit_scale=True, unit_divisor=1024,
+                              leave=False) as progress:
+                        async for chunk in response.aiter_bytes():
+                            await f.write(chunk)
+                            progress.update(len(chunk))
+                            if verify_hash:
+                                hash.update(chunk)
 
-            if verify_hash:
-                tqdm.write(f'SHA256 hash: {hash.hexdigest()}')
+                    if verify_hash:
+                        tqdm.write(f'SHA256 hash: {hash.hexdigest()}')
 
-        # Check the file was completely downloaded.
-        if verify_size:
-            f.flush()
-            local_file_size = outfile.stat().st_size
-            if not local_file_size == remote_file_size:
-                raise RuntimeError(f'Server claimed file size would be '
-                                   f'{remote_file_size} bytes, but downloaded '
-                                   f'{local_file_size} byes.')
+                    # Check the file was completely downloaded.
+                    if verify_size:
+                        await f.flush()
+                        local_file_size = outfile.stat().st_size
+                        if not local_file_size == remote_file_size:
+                            raise RuntimeError(
+                                f'Server claimed file size would be '
+                                f'{remote_file_size} bytes, but '
+                                f'downloaded {local_file_size} byes.')
 
 
-def _download_files(*,
-                    target_dir: Path,
-                    files: dict,
-                    verify_hash: bool,
-                    verify_size: bool,
-                    max_retries: int,
-                    retry_backoff: float) -> None:
+async def _download_files(*,
+                          target_dir: Path,
+                          files: Iterable,
+                          verify_hash: bool,
+                          verify_size: bool,
+                          max_retries: int,
+                          retry_backoff: float,
+                          max_concurrent_downloads: int) -> None:
     """Download files, one by one.
     """
+    # Sempahore (counter) to limit maximum number of concurrent download
+    # coroutines.
+    semaphore = asyncio.Semaphore(max_concurrent_downloads)
+    download_tasks = []
+
     for file in files:
         filename = Path(file['filename'])
         api_file_size = file['size']
@@ -149,39 +169,27 @@ def _download_files(*,
 
         outfile = target_dir / filename
         outfile.parent.mkdir(parents=True, exist_ok=True)
-        _download_file(url=url, api_file_size=api_file_size, outfile=outfile,
-                       verify_hash=verify_hash, verify_size=verify_size,
-                       max_retries=max_retries, retry_backoff=retry_backoff)
+        download_task = _download_file(
+            url=url, api_file_size=api_file_size,
+            outfile=outfile, verify_hash=verify_hash,
+            verify_size=verify_size, max_retries=max_retries,
+            retry_backoff=retry_backoff, semaphore=semaphore)
+        download_tasks.append(download_task)
+
+    await asyncio.gather(*download_tasks)
 
 
-@click.command()
-@click.option('--dataset', required=True, help='The OpenNeuro dataset name.')
-@click.option('--tag', help='The tag (version) of the dataset.')
-@click.option('--target_dir', help='The directory to download to.')
-@click.option('--include', multiple=True,
-              help='Only include the specified file or directory. Can be '
-                   'passed multiple times.')
-@click.option('--exclude', multiple=True,
-              help='Exclude the specified file or directory. Can be passed '
-                   'multiple times.')
-@click.option('--verify_hash', type=bool, default=False, show_default=True,
-              help='Whether to print the SHA256 hash of each downloaded file.')
-@click.option('--verify_size', type=bool, default=True, show_default=True,
-              help='Whether to check the downloaded file size matches what '
-                   'the server announced.')
-@click.option('--max_retries', type=int, default=5, show_default=True,
-              help='Try the specified number of times to download a file '
-                   'before failing.')
 def download(*,
              dataset: str,
              tag: Optional[str] = None,
-             target_dir: Optional[str] = None,
-             include: Optional[Tuple[str]] = None,
-             exclude: Optional[Tuple[str]] = None,
+             target_dir: Optional[Union[Path, str]] = None,
+             include: Optional[Iterable[str]] = None,
+             exclude: Optional[Iterable[str]] = None,
              verify_hash: bool = False,
              verify_size: bool = True,
-             max_retries: int = 5) -> None:
-    """Download datasets from OpenNeuro.\f
+             max_retries: int = 5,
+             max_concurrent_downloads: int = 5) -> None:
+    """Download datasets from OpenNeuro.
 
     Parameters
     ----------
@@ -205,12 +213,16 @@ def download(*,
         announced.
     max_retries
         Try the specified number of times to download a file before failing.
+    max_concurrent_downloads
+        The maximum number of downloads to run in parallel.
     """
     if target_dir is None:
         target_dir = Path(dataset)
+    else:
+        target_dir = Path(target_dir)
 
-    include = [] if include is None else include
-    exclude = [] if exclude is None else exclude
+    include = [] if include is None else list(include)
+    exclude = [] if exclude is None else list(exclude)
 
     retry_backoff = 0.5  # seconds
     metadata = _get_download_metadata(base_url=default_base_url,
@@ -250,9 +262,38 @@ def download(*,
                                f'{include[idx]} in the dataset. Please '
                                f'check your includes.')
 
-    _download_files(target_dir=target_dir,
-                    files=files,
-                    verify_hash=verify_hash,
-                    verify_size=verify_size,
-                    max_retries=max_retries,
-                    retry_backoff=retry_backoff)
+    asyncio.run(_download_files(
+        target_dir=target_dir,
+        files=files,
+        verify_hash=verify_hash,
+        verify_size=verify_size,
+        max_retries=max_retries,
+        retry_backoff=retry_backoff,
+        max_concurrent_downloads=max_concurrent_downloads)
+    )
+
+
+@click.command()
+@click.option('--dataset', required=True, help='The OpenNeuro dataset name.')
+@click.option('--tag', help='The tag (version) of the dataset.')
+@click.option('--target_dir', help='The directory to download to.')
+@click.option('--include', multiple=True,
+              help='Only include the specified file or directory. Can be '
+                   'passed multiple times.')
+@click.option('--exclude', multiple=True,
+              help='Exclude the specified file or directory. Can be passed '
+                   'multiple times.')
+@click.option('--verify_hash', type=bool, default=False, show_default=True,
+              help='Whether to print the SHA256 hash of each downloaded file.')
+@click.option('--verify_size', type=bool, default=True, show_default=True,
+              help='Whether to check the downloaded file size matches what '
+                   'the server announced.')
+@click.option('--max_retries', type=int, default=5, show_default=True,
+              help='Try the specified number of times to download a file '
+                   'before failing.')
+@click.option('--max_concurrent_downloads', type=int, default=5,
+              show_default=True,
+              help='The maximum number of downloads to run in parallel.')
+def download_cli(**kwargs):
+    """Download datasets from OpenNeuro."""
+    download(**kwargs)
