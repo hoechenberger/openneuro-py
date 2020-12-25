@@ -1,5 +1,10 @@
 # Changelog
 
+## 2020.7
+
+- Performance improvements.
+- Verify file hahses by default whenever possible.
+
 ## 2020.6
 
 - Ensure we can operate on Python 3.6.
