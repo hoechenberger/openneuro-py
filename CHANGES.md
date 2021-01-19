@@ -1,5 +1,9 @@
 # Changelog
 
+## 2021.0
+
+- Improved handling of connection timeouts.
+
 ## 2020.7
 
 - Performance improvements.
