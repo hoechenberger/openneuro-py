@@ -388,7 +388,7 @@ def download(*,
     if stdout_unicode:
         msg_great_to_see_you += ' 🤗'
     msg_please = '👉 Please' if stdout_unicode else '   Please'
-        
+
     msg = (f'\n{msg_hello} This is openneuro-py {__version__}. '
            f'{msg_great_to_see_you}\n\n'
            f'   {msg_please} report {msg_problems} and {msg_bugs} at\n'
@@ -407,6 +407,8 @@ def download(*,
     else:
         target_dir = Path(target_dir)
 
+    include = [include] if isinstance(include, str) else include
+    exclude = [exclude] if isinstance(include, str) else exclude
     include = [] if include is None else list(include)
     exclude = [] if exclude is None else list(exclude)
 
