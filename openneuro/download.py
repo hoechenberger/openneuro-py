@@ -1,4 +1,5 @@
 import sys
+import fnmatch
 import hashlib
 import asyncio
 from pathlib import Path
@@ -368,9 +369,13 @@ def download(*,
         directory.
     include
         Files and directories to download. **Only** these files and directories
-        will be retrieved.
+        will be retrieved. Uses Unix path expansion (``*`` for any number of
+        wildcard characters and ``?`` for one wildcard character;
+        e.g. ``'sub-1_task-*.fif'``)
     exclude
         Files and directories to exclude from downloading.
+        Uses Unix path expansion (``*`` for any number of wildcard characters and
+        ``?`` for one wildcard character; e.g. ``'sub-1_task-*.fif'``)
     verify_hash
         Whether to calculate and print the SHA256 hash of each downloaded file.
     verify_size
@@ -436,17 +441,19 @@ def download(*,
                 include_counts[include.index(filename)] += 1
             continue
 
-        if ((not include or any(filename.startswith(i) for i in include)) and
-                not any(filename.startswith(e) for e in exclude)):
+        matches_keep = [filename.startswith(i) or fnmatch.fnmatch(filename, i)
+                        for i in include]
+        matches_remove = [filename.startswith(e) or
+                          fnmatch.fnmatch(filename, e)
+                          for e in exclude]
+        if (not include or any(matches_keep)) and not any(matches_remove):
             files.append(file)
             # Keep track of include matches.
-            for i in include:
-                if filename.startswith(i):
-                    include_counts[include.index(i)] += 1
+            include_counts[matches_keep.index(True)] += 1
 
     for idx, count in enumerate(include_counts):
         if count == 0:
-            raise RuntimeError(f'Could not find paths starting with '
+            raise RuntimeError(f'Could not find path '
                                f'{include[idx]} in the dataset. Please '
                                f'check your includes.')
 
