@@ -3,16 +3,19 @@ import fnmatch
 import hashlib
 import asyncio
 from pathlib import Path
+import string
 from typing import Optional, Iterable, Union
 if sys.version_info >= (3, 8):
     from typing import Literal
 else:
     from typing_extensions import Literal
 
+import requests
 import httpx
 from tqdm.asyncio import tqdm
 import click
 import aiofiles
+from sgqlc.endpoint.requests import RequestsEndpoint
 
 from . import __version__
 from .config import default_base_url
@@ -29,7 +32,39 @@ except AttributeError:
 # HTTP server responses that indicate hopefully intermittent errors that
 # warrant a retry.
 allowed_retry_codes = (408, 500, 502, 503, 504, 522, 524)
-allowed_retry_exceptions = (httpx.ConnectTimeout, httpx.ReadTimeout)
+allowed_retry_exceptions = (httpx.ConnectTimeout, httpx.ReadTimeout,
+                            requests.exceptions.ConnectTimeout,
+                            requests.exceptions.ReadTimeout)
+
+# GraphQL endpoint and queries.
+
+gql_url = 'https://openneuro.org/crn/graphql'
+
+dataset_query_template = string.Template("""
+    query {
+        dataset(id: "$dataset_id") {
+            latestSnapshot {
+                files(prefix: null) {
+                    filename
+                    urls
+                    size
+                }
+            }
+        }
+    }
+""")
+
+snapshot_query_template = string.Template("""
+    query {
+        snapshot(datasetId: "$dataset_id", tag: "$tag") {
+            files(prefix: null) {
+                filename
+                urls
+                size
+            }
+        }
+    }
+""")
 
 
 def _get_download_metadata(*,
@@ -41,18 +76,23 @@ def _get_download_metadata(*,
     """Retrieve dataset metadata required for the download.
     """
     if tag is None:
-        url = f'{base_url}crn/datasets/{dataset_id}/download'
+        query = dataset_query_template.substitute(dataset_id=dataset_id)
     else:
-        url = f'{base_url}crn/datasets/{dataset_id}/snapshots/{tag}/download'
+        query = snapshot_query_template.substitute(dataset_id=dataset_id,
+                                                   tag=tag)
 
-    try:
-        response = httpx.get(url)
-        request_timed_out = False
-    except allowed_retry_exceptions:
-        request_timed_out = True
+    with requests.Session() as session:
+        gql_endpoint = RequestsEndpoint(url=gql_url, session=session)
+
+        try:
+            response_json = gql_endpoint(query=query)
+            request_timed_out = False
+        except allowed_retry_exceptions:
+            response_json = None
+            request_timed_out = True
 
     if request_timed_out and max_retries > 0:
-        tqdm.write(f'Request timed out, retrying …')
+        tqdm.write('Request timed out, retrying …')
         asyncio.sleep(retry_backoff)
         max_retries -= 1
         retry_backoff *= 2
@@ -61,21 +101,17 @@ def _get_download_metadata(*,
                                       retry_backoff=retry_backoff)
     elif request_timed_out:
         raise RuntimeError('Timeout when trying to fetch metadata.')
-    
-    if not response.is_error:
-        response_json = response.json()
-        return response_json
-    elif response.status_code in allowed_retry_codes and max_retries > 0:
-        tqdm.write(f'Error {response.status_code}, retrying …')
-        asyncio.sleep(retry_backoff)
-        max_retries -= 1
-        retry_backoff *= 2
-        return _get_download_metadata(base_url=base_url, dataset_id=dataset_id,
-                                      tag=tag, max_retries=max_retries,
-                                      retry_backoff=retry_backoff)
+
+    if response_json is not None:
+        if 'errors' in response_json:
+            raise RuntimeError(f'Query failed: '
+                               f'"{response_json["errors"][0]["message"]}"')
+        elif tag is None:
+            return response_json['data']['dataset']['latestSnapshot']
+        else:
+            return response_json['data']['snapshot']
     else:
-        raise RuntimeError(f'Error {response.status_code} when trying to '
-                           f'fetch metadata.')
+        raise RuntimeError('Error when trying to fetch metadata.')
 
 
 async def _download_file(*,
@@ -113,7 +149,7 @@ async def _download_file(*,
                     return
                 else:
                     raise RuntimeError(f'Timeout when trying to download '
-                                        f'{outfile}.')
+                                       f'{outfile}.')
 
             # Try to get the S3 MD5 hash for the file.
             try:
@@ -127,7 +163,7 @@ async def _download_file(*,
             try:
                 remote_file_size = int(response.headers['content-length'])
             except KeyError:
-                # The server doesn't always set a Conent-Length header.
+                # The server doesn't always set a Content-Length header.
                 try:
                     async with client.stream('GET', url=url) as response:
                         response_content = await response.aread()
@@ -143,7 +179,7 @@ async def _download_file(*,
                         return
                     else:
                         raise RuntimeError(f'Timeout when trying to download '
-                                            f'{outfile}.')
+                                           f'{outfile}.')
 
     headers = {}
     if outfile.exists() and local_file_size == remote_file_size:
@@ -200,7 +236,7 @@ async def _download_file(*,
                     if not response.is_error:
                         pass  # All good!
                     elif (response.status_code in allowed_retry_codes and
-                        max_retries > 0):
+                          max_retries > 0):
                         await _retry_download(
                             url=url, outfile=outfile,
                             api_file_size=api_file_size,
@@ -233,6 +269,7 @@ async def _download_file(*,
                     raise RuntimeError(f'Timeout when trying to download '
                                        f'{outfile}.')
 
+
 async def _retry_download(
     *,
     url: str,
@@ -249,13 +286,13 @@ async def _retry_download(
     max_retries -= 1
     retry_backoff *= 2
     await _download_file(url=url,
-                        api_file_size=api_file_size,
-                        outfile=outfile,
-                        verify_hash=verify_hash,
-                        verify_size=verify_size,
-                        max_retries=max_retries,
-                        retry_backoff=retry_backoff,
-                        semaphore=semaphore)
+                         api_file_size=api_file_size,
+                         outfile=outfile,
+                         verify_hash=verify_hash,
+                         verify_size=verify_size,
+                         max_retries=max_retries,
+                         retry_backoff=retry_backoff,
+                         semaphore=semaphore)
 
 
 async def _retrieve_and_write_to_disk(
@@ -285,9 +322,9 @@ async def _retrieve_and_write_to_disk(
 
     async with aiofiles.open(outfile, mode=mode) as f:
         with tqdm(desc=desc, initial=local_file_size,
-                    total=remote_file_size, unit='B',
-                    unit_scale=True, unit_divisor=1024,
-                    leave=False) as progress:
+                  total=remote_file_size, unit='B',
+                  unit_scale=True, unit_divisor=1024,
+                  leave=False) as progress:
             num_bytes_downloaded = response.num_bytes_downloaded
 
             # TODO Add timeout handling here, too.
@@ -374,8 +411,8 @@ def download(*,
         e.g. ``'sub-1_task-*.fif'``)
     exclude
         Files and directories to exclude from downloading.
-        Uses Unix path expansion (``*`` for any number of wildcard characters and
-        ``?`` for one wildcard character; e.g. ``'sub-1_task-*.fif'``)
+        Uses Unix path expansion (``*`` for any number of wildcard characters
+        and ``?`` for one wildcard character; e.g. ``'sub-1_task-*.fif'``)
     verify_hash
         Whether to calculate and print the SHA256 hash of each downloaded file.
     verify_size
@@ -413,8 +450,9 @@ def download(*,
         target_dir = Path(target_dir)
 
     include = [include] if isinstance(include, str) else include
-    exclude = [exclude] if isinstance(include, str) else exclude
     include = [] if include is None else list(include)
+
+    exclude = [exclude] if isinstance(exclude, str) else exclude
     exclude = [] if exclude is None else list(exclude)
 
     retry_backoff = 0.5  # seconds
@@ -449,13 +487,15 @@ def download(*,
         if (not include or any(matches_keep)) and not any(matches_remove):
             files.append(file)
             # Keep track of include matches.
-            include_counts[matches_keep.index(True)] += 1
+            if any(matches_keep):
+                include_counts[matches_keep.index(True)] += 1
 
-    for idx, count in enumerate(include_counts):
-        if count == 0:
-            raise RuntimeError(f'Could not find path '
-                               f'{include[idx]} in the dataset. Please '
-                               f'check your includes.')
+    if include:
+        for idx, count in enumerate(include_counts):
+            if count == 0:
+                raise RuntimeError(f'Could not find path '
+                                   f'{include[idx]} in the dataset. Please '
+                                   f'check your includes.')
 
     msg = (f'Retrieving up to {len(files)} files '
            f'({max_concurrent_downloads} concurrent downloads).')
