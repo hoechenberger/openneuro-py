@@ -25,16 +25,21 @@ try:
     sys.stdout.reconfigure(encoding='utf-8')
     stdout_unicode = True
 except AttributeError:
-    # Python 3.6
     stdout_unicode = False
 
 
 # HTTP server responses that indicate hopefully intermittent errors that
 # warrant a retry.
 allowed_retry_codes = (408, 500, 502, 503, 504, 522, 524)
-allowed_retry_exceptions = (httpx.ConnectTimeout, httpx.ReadTimeout,
-                            requests.exceptions.ConnectTimeout,
-                            requests.exceptions.ReadTimeout)
+allowed_retry_exceptions = (
+    httpx.ConnectTimeout, httpx.ReadTimeout,
+    requests.exceptions.ConnectTimeout,
+    requests.exceptions.ReadTimeout,
+
+    # "peer closed connection without sending complete message body 
+    #  (incomplete chunked read)"
+    httpx.RemoteProtocolError  
+)
 
 # GraphQL endpoint and queries.
 
@@ -133,7 +138,8 @@ def _get_download_metadata(*,
                                                    tag=tag)
 
     with requests.Session() as session:
-        gql_endpoint = RequestsEndpoint(url=gql_url, session=session)
+        gql_endpoint = RequestsEndpoint(url=gql_url, session=session,
+                                        timeout=60)
 
         try:
             response_json = gql_endpoint(query=query)
@@ -141,6 +147,12 @@ def _get_download_metadata(*,
         except allowed_retry_exceptions:
             response_json = None
             request_timed_out = True
+
+    # Sometimes we do get a response, but it contains a gateway timeout error
+    # messsage (504 status code)
+    if (response_json is not None and 'errors' in response_json and
+            response_json['errors'][0]['message'].startswith('504')):
+        request_timed_out = True
 
     if request_timed_out and max_retries > 0:
         tqdm.write('Request timed out while fetching metadata, retrying …')
@@ -181,11 +193,18 @@ async def _download_file(*,
     else:
         local_file_size = 0
 
+    # The OpenNeuro servers are sometimes very slow to respond, so use a
+    # gigantic timeout for those.
+    if url.startswith('https://openneuro.org/crn/'):
+        timeout = 60
+    else:
+        timeout = 5
+
     # Check if we need to resume a download
     # The file sizes provided via the API often do not match the sizes reported
     # by the HTTP server. Rely on the sizes reported by the HTTP server.
     async with semaphore:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 response = await client.head(url)
                 headers = response.headers
@@ -279,7 +298,7 @@ async def _download_file(*,
         mode = 'wb'
 
     async with semaphore:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 async with (
                     client.stream('GET', url=url, headers=headers)
@@ -378,8 +397,8 @@ async def _retrieve_and_write_to_disk(
                   total=remote_file_size, unit='B',
                   unit_scale=True, unit_divisor=1024,
                   leave=False) as progress:
+            
             num_bytes_downloaded = response.num_bytes_downloaded
-
             # TODO Add timeout handling here, too.
             async for chunk in response.aiter_bytes():
                 await f.write(chunk)
@@ -399,8 +418,9 @@ async def _retrieve_and_write_to_disk(
             local_file_size = outfile.stat().st_size
             if not local_file_size == remote_file_size:
                 raise RuntimeError(
-                    f'Server claimed file size would be {remote_file_size} '
-                    f'bytes, but downloaded {local_file_size} byes.')
+                    f'Server claimed size of {outfile }would be '
+                    f'{remote_file_size} bytes, but downloaded '
+                    f'{local_file_size} byes.')
 
 
 async def _download_files(*,
@@ -556,19 +576,14 @@ def download(*,
         msg = f'👉 {msg}'
     tqdm.write(msg)
 
-    # Pre-Python-3.7 compat. Once we drop support for Python 3.6, simply
-    # replace this with: asyncio.run(_download_files(...))
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(asyncio.wait(
-        [_download_files(
-            target_dir=target_dir,
-            files=files,
-            verify_hash=verify_hash,
-            verify_size=verify_size,
-            max_retries=max_retries,
-            retry_backoff=retry_backoff,
-            max_concurrent_downloads=max_concurrent_downloads)]
-    ))
+    kwargs = dict(target_dir=target_dir,
+                  files=files,
+                  verify_hash=verify_hash,
+                  verify_size=verify_size,
+                  max_retries=max_retries,
+                  retry_backoff=retry_backoff,
+                  max_concurrent_downloads=max_concurrent_downloads)
+    asyncio.run(_download_files(**kwargs))
 
     msg_finished = f'Finished downloading {dataset}.'
     if stdout_unicode:
