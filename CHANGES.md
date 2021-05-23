@@ -1,11 +1,14 @@
 # Changelog
 
+## 2021.7
+
+- Before resuming a download, check if local and remote datasets actually
+  match.
+
 ## 2021.6
 
 - Disable transfer encoding (i.e., compression). This allows for an easier
   check whether a file has been completely downloaded.
-- Before resuming a download, check if local and remote datasets actually
-  match.
 
 ## 2021.5
 
