@@ -1,4 +1,5 @@
 import sys
+import os
 import fnmatch
 import hashlib
 import asyncio
@@ -13,7 +14,14 @@ else:
 
 import requests
 import httpx
-from tqdm.asyncio import tqdm
+
+# Manually "enforce" notebook mode in VS Code to get progress bar widgets
+# Can be removed once https://github.com/tqdm/tqdm/issues/1213 has been merged
+if 'VSCODE_PID' in os.environ:
+    from tqdm.notebook import tqdm
+else:
+    from tqdm.auto import tqdm
+
 import click
 import aiofiles
 from sgqlc.endpoint.requests import RequestsEndpoint
@@ -22,11 +30,14 @@ from . import __version__
 from .config import default_base_url
 
 
-try:
-    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stdout.encoding.lower() == 'utf-8':
     stdout_unicode = True
-except AttributeError:
-    stdout_unicode = False
+else:
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        stdout_unicode = True
+    except AttributeError:
+        stdout_unicode = False
 
 
 # HTTP server responses that indicate hopefully intermittent errors that
@@ -42,9 +53,9 @@ allowed_retry_exceptions = (
     requests.exceptions.ConnectTimeout,
     requests.exceptions.ReadTimeout,
 
-    # "peer closed connection without sending complete message body 
+    # "peer closed connection without sending complete message body
     #  (incomplete chunked read)"
-    httpx.RemoteProtocolError  
+    httpx.RemoteProtocolError
 )
 
 # GraphQL endpoint and queries.
@@ -394,7 +405,7 @@ async def _retrieve_and_write_to_disk(
                   total=remote_file_size, unit='B',
                   unit_scale=True, unit_divisor=1024,
                   leave=False) as progress:
-            
+
             num_bytes_downloaded = response.num_bytes_downloaded
             # TODO Add timeout handling here, too.
             async for chunk in response.aiter_bytes():
@@ -634,7 +645,18 @@ def download(*,
                   max_retries=max_retries,
                   retry_backoff=retry_backoff,
                   max_concurrent_downloads=max_concurrent_downloads)
-    asyncio.run(_download_files(**kwargs))
+
+    # Try to re-use event loop if it already exists. This is required e.g.
+    # for use in Jupyter notebooks.
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop:
+        loop.create_task(_download_files(**kwargs))
+    else:
+        asyncio.run(_download_files(**kwargs))
 
     msg_finished = f'Finished downloading {dataset}.'
     if stdout_unicode:
