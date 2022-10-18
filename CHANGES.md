@@ -2,7 +2,7 @@
 
 ## unreleased
 
-- ...
+- Better handling of server response errors.
 
 ## 2022.2.0
 
