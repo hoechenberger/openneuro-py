@@ -33,7 +33,7 @@ import aiofiles
 from sgqlc.endpoint.requests import RequestsEndpoint
 
 from . import __version__
-from .config import default_base_url
+from .config import BASE_URL, get_token, init_config
 
 
 if hasattr(sys.stdout, 'encoding') and sys.stdout.encoding.lower() == 'utf-8':
@@ -43,6 +43,11 @@ elif hasattr(sys.stdout, 'reconfigure'):
     stdout_unicode = True
 else:
     stdout_unicode = False
+
+
+def login():
+    """Login to OpenNeuro and store an access token."""
+    init_config()
 
 
 # HTTP server responses that indicate hopefully intermittent errors that
@@ -113,6 +118,13 @@ snapshot_query_template = string.Template("""
 
 def _safe_query(query, *, timeout=None):
     with requests.Session() as session:
+        try:
+            token = get_token()
+            session.cookies.set_cookie(
+                requests.cookies.create_cookie('accessToken', token))
+            tqdm.write('🍪 Using API token to log in')
+        except ValueError:
+            pass  # No login
         gql_endpoint = RequestsEndpoint(
             url=gql_url, session=session, timeout=timeout)
         try:
@@ -155,7 +167,7 @@ def _check_snapshot_exists(*,
 
 
 def _get_download_metadata(*,
-                           base_url: str = default_base_url,
+                           base_url: str = BASE_URL,
                            dataset_id: str,
                            tag: Optional[str] = None,
                            tree: str = 'null',
@@ -204,8 +216,23 @@ def _get_download_metadata(*,
 
     if response_json is not None:
         if 'errors' in response_json:
-            raise RuntimeError(f'Query failed: '
-                               f'"{response_json["errors"][0]["message"]}"')
+            msg = response_json["errors"][0]["message"]
+            if msg == 'You do not have access to read this dataset.':
+                try:
+                    # Do we have an API token?
+                    get_token()
+                    raise RuntimeError('We were not permitted to download '
+                                       'this dataset. Perhaps your user '
+                                       'does not have access to it, or '
+                                       'your API token is wrong.')
+                except ValueError as e:
+                    # We don't have an API token.
+                    raise RuntimeError('It seems that this is a restricted '
+                                       'dataset. However, your API token is '
+                                       'not configured properly, so we could '
+                                       f'not log you in. {e}')
+            else:
+                raise RuntimeError(f'Query failed: "{msg}"')
         elif tag is None:
             return response_json['data']['dataset']['latestSnapshot']
         else:

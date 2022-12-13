@@ -7,7 +7,7 @@ Richard Höchenberger <richard.hoechenberger@gmail.com>
 
 import click
 
-from .download import download_cli
+from ._download import login, download_cli
 from . import __version__
 
 
@@ -19,4 +19,11 @@ def cli() -> None:
     pass
 
 
+@click.command()
+def login_cli():
+    """Login to OpenNeuro and store an access token."""
+    login()
+
+
 cli.add_command(download_cli, name='download')
+cli.add_command(login_cli, name='login')
