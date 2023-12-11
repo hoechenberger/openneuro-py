@@ -747,7 +747,10 @@ def download(
         Files and directories to download. **Only** these files and directories
         will be retrieved. Uses Unix path expansion (``*`` for any number of
         wildcard characters and ``?`` for one wildcard character;
-        e.g. ``'sub-1_task-*.fif'``)
+        e.g. ``'sub-1_task-*.fif'``). As an example, if you would like to download
+        only subject '1' and run '01' files, you can do so via:
+        ``'sub-1/**/*run-01*'``. The pattern “**” will match any files and
+        zero or more directories, subdirectories and symbolic links to directories.
     exclude
         Files and directories to exclude from downloading.
         Uses Unix path expansion (``*`` for any number of wildcard characters
