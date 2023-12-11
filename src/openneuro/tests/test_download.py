@@ -121,7 +121,7 @@ def test_doi_handling(tmp_path: Path):
 def test_restricted_dataset(tmp_path: Path):
     """Test downloading a restricted dataset."""
     # API token for dummy user alijflsdvbjielsdlkjfeiljsvj@gmail.com
-    token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxOGNhNjE2ZS00OWQxLTRmOTUtODI1OS0xNzYwYzVhYjZjMDciLCJlbWFpbCI6ImFsaWpmbHNkdmJqaWVsc2Rsa2pmZWlsanN2akBnbWFpbC5jb20iLCJwcm92aWRlciI6Imdvb2dsZSIsIm5hbWUiOiJzZGZrbGVpamZsa3NkamYgc2xmZGRsa2phYWlmbCIsImFkbWluIjpmYWxzZSwiaWF0IjoxNjY1NDY4MjM4LCJleHAiOjE2OTcwMDQyMzh9.7YVL_Cagli84nTmumdcmrV1bW5hZMq3VJlMUDmTEpGU"  # noqa
+    token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxOGNhNjE2ZS00OWQxLTRmOTUtODI1OS0xNzYwYzVhYjZjMDciLCJlbWFpbCI6ImFsaWpmbHNkdmJqaWVsc2Rsa2pmZWlsanN2akBnbWFpbC5jb20iLCJwcm92aWRlciI6Imdvb2dsZSIsIm5hbWUiOiJzZGZrbGVpamZsa3NkamYgc2xmZGRsa2phYWlmbCIsImFkbWluIjpmYWxzZSwiaWF0IjoxNzAyMzIzNzk3LCJleHAiOjE3MzM4NTk3OTd9.Af9P71x1_hLNOzSZrht10ayEm72LdDuo5CkGvQEJoZo"  # noqa
 
     with mock.patch.object(openneuro.config, "CONFIG_PATH", tmp_path / ".openneuro"):
         with mock.patch("getpass.getpass", lambda _: token):
