@@ -1,21 +1,17 @@
-import sys
-import os
-import fnmatch
-from difflib import get_close_matches
-import hashlib
 import asyncio
-from pathlib import Path, PurePosixPath
-import string
+import fnmatch
+import hashlib
 import json
-from typing import Optional, Union, Literal
+import os
+import string
+import sys
+from collections.abc import Generator, Iterable
+from difflib import get_close_matches
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal
 
-if sys.version_info >= (3, 9):
-    from collections.abc import Iterable, Generator
-else:
-    from typing import Iterable, Generator  # Deprecated since 3.9
-
-import requests
 import httpx
+import requests
 
 # Manually "enforce" notebook mode in VS Code to get progress bar widgets
 # Can be removed once https://github.com/tqdm/tqdm/issues/1213 has been merged
@@ -24,13 +20,12 @@ if "VSCODE_PID" in os.environ:
 else:
     from tqdm.auto import tqdm
 
-import click
 import aiofiles
+import click
 from sgqlc.endpoint.requests import RequestsEndpoint
 
 from . import __version__
 from .config import BASE_URL, get_token, init_config
-
 
 if hasattr(sys.stdout, "encoding") and sys.stdout.encoding.lower() == "utf-8":
     stdout_unicode = True
@@ -41,7 +36,7 @@ else:
     stdout_unicode = False
 
 
-def login():
+def login() -> None:
     """Login to OpenNeuro and store an access token."""
     init_config()
 
@@ -117,7 +112,7 @@ snapshot_query_template = string.Template(
 )
 
 
-def _safe_query(query, *, timeout=None):
+def _safe_query(query, *, timeout=None) -> tuple[dict[str, Any] | None, bool]:
     with requests.Session() as session:
         session.headers.update(user_agent_header)
         try:
@@ -140,13 +135,13 @@ def _safe_query(query, *, timeout=None):
 
 def _check_snapshot_exists(
     *, dataset_id: str, tag: str, max_retries: int, retry_backoff: float
-):
+) -> None:
     query = all_snapshots_query_template.substitute(dataset_id=dataset_id)
     response_json, request_timed_out = _safe_query(query)
 
     if request_timed_out and max_retries > 0:
-        tqdm.write("Request timed out while fetching list of snapshots, " "retrying …")
-        asyncio.sleep(retry_backoff)
+        tqdm.write("Request timed out while fetching list of snapshots, retrying …")
+        asyncio.sleep(retry_backoff)  # pyright: ignore[reportUnusedCoroutine]
         max_retries -= 1
         retry_backoff *= 2
         return _check_snapshot_exists(
@@ -158,6 +153,7 @@ def _check_snapshot_exists(
     elif request_timed_out:
         raise RuntimeError("Timeout when trying to fetch list of snapshots.")
 
+    assert response_json is not None
     snapshots = response_json["data"]["dataset"]["snapshots"]
     tags = [s["id"].replace(f"{dataset_id}:", "") for s in snapshots]
 
@@ -173,12 +169,12 @@ def _get_download_metadata(
     *,
     base_url: str = BASE_URL,
     dataset_id: str,
-    tag: Optional[str] = None,
+    tag: str | None = None,
     tree: str = "null",
     max_retries: int,
     retry_backoff: float = 0.5,
     check_snapshot: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """Retrieve dataset metadata required for the download."""
     if tag is None:
         query = dataset_query_template.substitute(dataset_id=dataset_id)
@@ -207,7 +203,7 @@ def _get_download_metadata(
 
     if request_timed_out and max_retries > 0:
         tqdm.write(_unicode("Request timed out while fetching metadata, retrying"))
-        asyncio.sleep(retry_backoff)
+        asyncio.sleep(retry_backoff)  # pyright: ignore[reportUnusedCoroutine]
         max_retries -= 1
         retry_backoff *= 2
         return _get_download_metadata(
@@ -472,8 +468,8 @@ async def _retrieve_and_write_to_disk(
     mode: Literal["ab", "wb"],
     desc: str,
     local_file_size: int,
-    remote_file_size: Optional[int],
-    remote_file_hash: Optional[str],
+    remote_file_size: int | None,
+    remote_file_hash: str | None,
     verify_hash: bool,
     verify_size: bool,
 ) -> None:
@@ -549,7 +545,7 @@ async def _retrieve_and_write_to_disk(
 async def _download_files(
     *,
     target_dir: Path,
-    files: Iterable[dict],
+    files: Iterable[dict[str, Any]],
     verify_hash: bool,
     verify_size: bool,
     max_retries: int,
@@ -584,7 +580,7 @@ async def _download_files(
     await asyncio.gather(*download_tasks)
 
 
-def _get_local_tag(*, dataset_id: str, dataset_dir: Path) -> Optional[str]:
+def _get_local_tag(*, dataset_id: str, dataset_dir: Path) -> str | None:
     """Get the local dataset revision."""
     local_json_path = dataset_dir / "dataset_description.json"
     if not local_json_path.exists():
@@ -636,11 +632,11 @@ def _iterate_filenames(
     files: Iterable[dict],
     *,
     dataset_id: str,
-    tag: str,
+    tag: str | None,
     max_retries: int,
     root: str = "",
     include: Iterable[str] = tuple(),
-) -> Generator[dict, None, None]:
+) -> Generator[dict[str, Any], None, None]:
     """Iterate over all files in a dataset, yielding filenames."""
     directories = list()
     for entity in files:
@@ -713,7 +709,7 @@ def _match_include_exclude(
     *,
     include: Iterable[str],
     exclude: Iterable[str],
-) -> bool:
+) -> tuple[list[bool], list[bool]]:
     """Check if a filename matches an include or exclude pattern."""
     matches_keep = [
         filename.startswith(i) or fnmatch.fnmatch(filename, i) for i in include
@@ -727,10 +723,10 @@ def _match_include_exclude(
 def download(
     *,
     dataset: str,
-    tag: Optional[str] = None,
-    target_dir: Optional[Union[Path, str]] = None,
-    include: Optional[Iterable[str]] = None,
-    exclude: Optional[Iterable[str]] = None,
+    tag: str | None = None,
+    target_dir: Path | str | None = None,
+    include: Iterable[str] | None = None,
+    exclude: Iterable[str] | None = None,
     verify_hash: bool = True,
     verify_size: bool = True,
     max_retries: int = 5,
@@ -829,7 +825,7 @@ def download(
                     f"specify a different target directory, and try again."
                 )
 
-    files = []
+    files: list[dict[str, Any]] = []
     include_counts = [0] * len(include)  # Keep track of include matches.
     filenames = []
     these_files = metadata["files"]
@@ -896,7 +892,7 @@ def download(
     )
     tqdm.write(_unicode(msg, emoji="📥", end=""))
 
-    kwargs = dict(
+    coroutine = _download_files(
         target_dir=target_dir,
         files=files,
         verify_hash=verify_hash,
@@ -910,13 +906,9 @@ def download(
     # for use in Jupyter notebooks.
     try:
         loop = asyncio.get_running_loop()
+        loop.create_task(coroutine)
     except RuntimeError:
-        loop = None
-
-    if loop:
-        loop.create_task(_download_files(**kwargs))
-    else:
-        asyncio.run(_download_files(**kwargs))
+        asyncio.run(coroutine)
 
     tqdm.write(_unicode(f"Finished downloading {dataset}.\n", emoji="✅", end=""))
     tqdm.write(_unicode("Please enjoy your brains.\n", emoji="🧠", end=""))
@@ -966,6 +958,6 @@ def download(
     show_default=True,
     help="The maximum number of downloads to run in parallel.",
 )
-def download_cli(**kwargs):
+def download_cli(**kwargs) -> None:
     """Download datasets from OpenNeuro."""
     download(**kwargs)

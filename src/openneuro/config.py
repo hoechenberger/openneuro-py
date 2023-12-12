@@ -1,13 +1,12 @@
-from pathlib import Path
+import getpass
+import json
 import os
 import stat
-import json
-import getpass
+from pathlib import Path
 from typing import TypedDict
 
 import platformdirs
 from tqdm.auto import tqdm
-
 
 CONFIG_DIR = Path(
     platformdirs.user_config_dir(appname="openneuro-py", appauthor=False, roaming=True)
@@ -18,6 +17,8 @@ BASE_URL = "https://openneuro.org/"
 
 
 class Config(TypedDict):
+    """Configuration container."""
+
     endpoint: str
     apikey: str
 
@@ -40,7 +41,7 @@ def init_config() -> None:
     os.chmod(CONFIG_PATH, stat.S_IRUSR | stat.S_IWUSR)
 
 
-def load_config() -> dict:
+def load_config() -> dict[str, str]:
     """Load an OpenNeuro configuration file, and return its contents.
 
     Returns

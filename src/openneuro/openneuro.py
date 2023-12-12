@@ -1,5 +1,4 @@
-"""
-openneuro-py is a lightweight client for accessing OpenNeuro datasets.
+"""openneuro-py is a lightweight client for accessing OpenNeuro datasets.
 
 Created and maintained by
 Richard Höchenberger <richard.hoechenberger@gmail.com>
@@ -7,8 +6,8 @@ Richard Höchenberger <richard.hoechenberger@gmail.com>
 
 import click
 
-from ._download import login, download_cli
 from . import __version__
+from ._download import download_cli, login
 
 
 @click.group()
@@ -19,7 +18,7 @@ def cli() -> None:
 
 
 @click.command()
-def login_cli():
+def login_cli() -> None:
     """Login to OpenNeuro and store an access token."""
     login()
 
