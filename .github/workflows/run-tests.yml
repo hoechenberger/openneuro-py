@@ -47,5 +47,12 @@ jobs:
       run: python -m build -w .
     - name: Install openneuro-py
       run: pip install .[tests]
+    - name: Test CLI commands
+      run: |
+        openneuro-py
+        openneuro-py --help
+        openneuro-py --version
+        openneuro-py download --help
+        openneuro-py login --help
     - name: Test with pytest
       run: pytest
