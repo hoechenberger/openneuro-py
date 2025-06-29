@@ -103,5 +103,5 @@ Paste the API key and press return.
 
 ```python
 import openneuro as on
-on.download(dataset='ds000246', target-dir='data/bids')
+on.download(dataset='ds000246', target_dir='data/bids')
 ```
