@@ -694,24 +694,58 @@ def _iterate_filenames(
             #
             # All three of these should traverse `sub-CON001` and its
             # subdirectories.
-            n_parts = len(PurePosixPath(root).parts)
-            dir_include = [PurePosixPath(inc) for inc in include]
-            dir_include = (
-                [  # for stuff like sub-CON001/*
-                    "/".join(inc.parts[:n_parts] + ("*",))
-                    for inc in dir_include
-                    if len(inc.parts) >= n_parts
-                ]
-                + [  # and stuff like sub-CON001/*.eeg
-                    "/".join(inc.parts[: n_parts - 1] + ("*",))
-                    for inc in dir_include
-                    if len(inc.parts) >= n_parts - 1 and len(inc.parts) > 1
-                ]
-            )  # we want to traverse sub-CON001 in both cases
-            matches_include, _ = _match_include_exclude(
-                directory["filename"], include=dir_include, exclude=[]
-            )
-            if dir_include and not any(matches_include):
+            dir_path = directory["filename"]
+
+            # Check if any of the include patterns match or are parents
+            # of this directory
+            should_traverse = False
+            for inc in include:
+                # Normalize paths for comparison
+                inc_path = PurePosixPath(inc)
+                dir_path_obj = PurePosixPath(dir_path)
+
+                # Case 1: Direct match (e.g., sub-CON001 matches sub-CON001)
+                if dir_path == inc:
+                    should_traverse = True
+                    break
+
+                # Case 2: Directory is a parent of include pattern
+                # (e.g., sub-CON001 is parent of sub-CON001/*)
+                inc_parts = inc_path.parts
+                dir_parts = dir_path_obj.parts
+                if len(dir_parts) <= len(inc_parts) and all(
+                    d == i for d, i in zip(dir_parts, inc_parts)
+                ):
+                    should_traverse = True
+                    break
+
+                # Case 3: Include is a directory (no wildcard, no extension)
+                # and matches this directory. Also handle the case where the
+                # include is a directory and the dir_path is a subdirectory
+                # or file within it
+                if (
+                    inc == dir_path
+                    or (inc.endswith("/") and dir_path == inc.rstrip("/"))
+                    or (
+                        not any(char in inc for char in "*?[]")
+                        and (
+                            dir_path == inc
+                            or dir_path.startswith(inc.rstrip("/") + "/")
+                        )
+                    )
+                ):
+                    should_traverse = True
+                    break
+
+                # Case 4: Handle wildcard patterns
+                if "*" in inc:
+                    # Convert glob pattern to regex pattern for prefix matching
+                    pattern_prefix = inc.split("*")[0]
+                    if dir_path.startswith(pattern_prefix):
+                        should_traverse = True
+                        break
+
+            if not should_traverse:
                 continue
         # Query filenames
         this_dir = directory["filename"]
