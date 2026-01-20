@@ -39,7 +39,7 @@ invalid_tag = "abcdefg"
             include_aws,
             exclude_aws,
             id="aws-ds000246",
-            marks=pytest.mark.xfail(reason="ECONNREFUSED"),
+            marks=pytest.mark.flaky(reruns=5, reruns_delay=5),
         ),
         pytest.param(dataset_id_on, tag_on, include_on, exclude_on, id="on-ds000117"),
     ],
@@ -63,6 +63,7 @@ def test_download_invalid_tag(
         download(dataset=dataset_id, tag=invalid_tag, target_dir=tmp_path)
 
 
+@pytest.mark.flaky(reruns=5, reruns_delay=5)
 def test_resume_download(tmp_path: Path):
     """Test resuming of a dataset download."""
     dataset = "ds000246"
