@@ -57,7 +57,7 @@ packages = ["src/openneuro"]
 addopts = ["--durations=10", "--tb=short", "-ra", "-vv"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "D", "I"]
+select = ["E", "F", "W", "D", "I", "UP"]
 ignore = [
   "D203",  # one-blank-line-before-class
   "D213",  # multi-line-summary-second-line
