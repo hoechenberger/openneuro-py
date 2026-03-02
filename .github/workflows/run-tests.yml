@@ -7,10 +7,10 @@ on:
   # push:
   #   branches: ['**']
   pull_request:
-    branches: ["**"]
+    branches: ['**']
   create:
     branches: [main]
-    tags: ["**"]
+    tags: ['**']
   # schedule:
   #   - cron: "0 4 * * *"
 
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Adjust for min and max supported Python versions
+       # Adjust for min and max supported Python versions
         python-version: ["3.14"]
         os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
         include:
@@ -34,35 +34,35 @@ jobs:
       run:
         shell: bash -e {0}
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - name: Install uv and set the python version
-        uses: astral-sh/setup-uv@v7
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Check if lockfile is up-to-date
-        run: uv lock --check
-      - name: Install the project
-        run: uv sync --locked
-      # Test building & distribution
-      - name: Test building the distributions
-        run: uv build
-      - name: Check if package can be installed and imported
-        run: uv run --isolated --with . --no-project -- python -c "import openneuro"
-      - name: Check if CLI works
-        run: uv run --isolated --with . --no-project -- openneuro-py --help
-      # This is where the actual integration tests start
-      - name: Test CLI commands
-        run: |
-          uv run openneuro-py --help
-          uv run openneuro-py --version
-          uv run openneuro-py download --help
-          uv run openneuro-py login --help
-      - name: Test entry point
-        run: |
-          uv run python -m openneuro --help
-      - name: Test with pytest
-        env:
-          OPENNEURO_TEST_TOKEN: ${{ secrets.OPENNEURO_TEST_TOKEN }}
-        run: uv run pytest
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    - name: Install uv and set the python version
+      uses: astral-sh/setup-uv@v7
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Check if lockfile is up-to-date
+      run: uv lock --check
+    - name: Install the project
+      run: uv sync --locked
+    # Test building & distribution
+    - name: Test building the distributions
+      run: uv build
+    - name: Check if package can be installed and imported
+      run: uv run --isolated --with . --no-project -- python -c "import openneuro"
+    - name: Check if CLI works
+      run: uv run --isolated --with . --no-project -- openneuro-py --help
+    # This is where the actual integration tests start
+    - name: Test CLI commands
+      run: |
+        uv run openneuro-py --help
+        uv run openneuro-py --version
+        uv run openneuro-py download --help
+        uv run openneuro-py login --help
+    - name: Test entry point
+      run: |
+        uv run python -m openneuro --help
+    - name: Test with pytest
+      env:
+        OPENNEURO_TEST_TOKEN: ${{ secrets.OPENNEURO_TEST_TOKEN }}
+      run: uv run pytest
