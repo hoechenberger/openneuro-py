@@ -24,9 +24,11 @@ import hashlib
 import io
 import json
 import shlex
+import ssl
 import string
 import sys
 import time
+import warnings
 from collections.abc import Generator, Iterable
 from difflib import get_close_matches
 from pathlib import Path, PurePosixPath
@@ -35,7 +37,7 @@ from typing import Any, Literal
 import aiofiles
 import httpx
 import requests
-import truststore
+from requests.adapters import HTTPAdapter
 from sgqlc.endpoint.requests import RequestsEndpoint
 from tqdm.auto import tqdm
 
@@ -44,7 +46,39 @@ from openneuro._config import BASE_URL, get_token, init_config
 
 # Use system trust store for SSL certificates, which is important for users in
 # enterprise environments with custom CAs.
-truststore.inject_into_ssl()
+# https://truststore.readthedocs.io/en/latest/#using-truststore-with-requests
+# https://stackoverflow.com/questions/78219802/use-truststores-sslcontext-with-python-requests-session-object
+#
+# The SSLContext construction may fail on some platforms (e.g., macOS) even when
+# truststore is importable:
+# https://github.com/sethmlarson/truststore/issues/167
+try:
+    import truststore
+
+    ssl_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+except (ImportError, OSError, ssl.SSLError) as exc:
+    ssl_context = ssl.create_default_context()
+    warnings.warn(
+        f"Could not use truststore for SSL verification ({exc!r}); "
+        "falling back to Python/OpenSSL default certificate verification.",
+        stacklevel=1,
+    )
+
+
+class TruststoreAdapter(HTTPAdapter):
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        pool_kwargs.setdefault("ssl_context", ssl_context)
+        return super().init_poolmanager(
+            connections,
+            maxsize,
+            block,
+            **pool_kwargs,
+        )
+
+    def proxy_manager_for(self, proxy, **proxy_kwargs):
+        proxy_kwargs.setdefault("ssl_context", ssl_context)
+        return super().proxy_manager_for(proxy, **proxy_kwargs)
+
 
 if hasattr(sys.stdout, "encoding") and sys.stdout.encoding.lower() == "utf-8":
     stdout_unicode = True
@@ -135,6 +169,7 @@ def _safe_query(
     query: str, *, timeout: float | None = None
 ) -> tuple[dict[str, Any] | None, bool]:
     with requests.Session() as session:
+        session.mount("https://", TruststoreAdapter())
         session.headers.update(user_agent_header)
         try:
             token = get_token()
@@ -319,7 +354,7 @@ async def _download_file(
     # The file sizes provided via the API often do not match the sizes reported
     # by the HTTP server. Rely on the sizes reported by the HTTP server.
     async with semaphore:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=ssl_context) as client:
             try:
                 response = await client.head(url, headers=user_agent_header)
                 headers = response.headers
@@ -419,7 +454,7 @@ async def _download_file(
         desc = outfile.name
 
     async with semaphore:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=ssl_context) as client:
             try:
                 async with client.stream(
                     "GET", url=url, headers=request_headers
