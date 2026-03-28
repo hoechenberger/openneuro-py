@@ -136,6 +136,7 @@ user_agent_header: dict[str, str] = {"user-agent": f"openneuro-py/{__version__}"
 # GraphQL endpoint and queries.
 
 gql_url = "https://openneuro.org/crn/graphql"
+_MAX_CONCURRENT_METADATA_REQUESTS = 10
 
 dataset_query_template = string.Template(
     """
@@ -956,8 +957,7 @@ def download(
     max_retries
         Try the specified number of times to download a file before failing.
     max_concurrent_downloads
-        The maximum number of downloads and metadata requests to run in
-        parallel.
+        The maximum number of downloads to run in parallel.
     metadata_timeout
         Timeout in seconds for metadata queries.
 
@@ -1029,7 +1029,7 @@ def download(
     these_files = metadata["files"]
     del metadata
 
-    with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as executor:
+    with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_METADATA_REQUESTS) as executor:
         for file in tqdm(
             _iterate_filenames(
                 these_files,
