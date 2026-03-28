@@ -194,12 +194,12 @@ def _safe_query(
     return response_json, request_timed_out
 
 
-def _write_retry(*, what: str, retry: int, backoff: float) -> None:
+def _write_retry(*, what: str, reason: str, retry: int, backoff: float) -> None:
     remaining = "1 retry remains" if retry == 1 else f"{retry} retries remain"
     remaining += f", backing off {backoff:0.1f}s"
     tqdm.write(
         _unicode(
-            f"Request timed out while {what}, retrying ({remaining})",
+            f"{reason} while {what}, retrying ({remaining})",
             emoji="🔄",
         )
     )
@@ -290,7 +290,12 @@ def _retry_request(
         if not request_timed_out:
             break
         if retry > 0:
-            _write_retry(what=what, retry=retry, backoff=retry_backoff)
+            _write_retry(
+                what=what,
+                reason="Request timed out",
+                retry=retry,
+                backoff=retry_backoff,
+            )
             time.sleep(retry_backoff)
             retry_backoff *= 2
     else:
@@ -350,8 +355,13 @@ async def _download_file(
             return
         except _RetryableError as err:
             if attempt < max_retries:
+                if isinstance(err.__cause__, allowed_retry_exceptions):
+                    reason = "Request timed out"
+                else:
+                    reason = str(err) or "Error"
                 _write_retry(
                     what=f"downloading {outfile}",
+                    reason=reason,
                     retry=max_retries - attempt,
                     backoff=retry_backoff,
                 )
@@ -482,10 +492,7 @@ async def _attempt_download(
                     if not response.is_error:
                         pass  # All good!
                     elif response.status_code in allowed_retry_codes:
-                        raise _RetryableError(
-                            f"Retryable HTTP error {response.status_code} "
-                            f"when trying to download {outfile} from {url}"
-                        )
+                        raise _RetryableError(f"HTTP {response.status_code}")
                     else:
                         raise RuntimeError(
                             f"Error {response.status_code} when trying to "
