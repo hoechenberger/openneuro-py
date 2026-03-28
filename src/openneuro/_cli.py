@@ -57,8 +57,8 @@ def download_cli(
         int,
         typer.Option(
             help=(
-                "The maximum number of downloads and metadata requests"
-                " to run in parallel."
+                "The maximum number of downloads and metadata"
+                "requests to run in parallel."
             ),
         ),
     ] = 5,
