@@ -962,9 +962,6 @@ def download(
         Timeout in seconds for metadata queries.
 
     """
-    if max_concurrent_downloads < 1:
-        raise ValueError("max_concurrent_downloads must be at least 1.")
-
     msg_problems = "problems 🤯" if stdout_unicode else "problems"
     msg_bugs = "bugs 🪲" if stdout_unicode else "bugs"
     msg_hello = "👋 Hello!" if stdout_unicode else "Hello!"

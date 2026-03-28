@@ -56,7 +56,6 @@ def download_cli(
     max_concurrent_downloads: Annotated[
         int,
         typer.Option(
-            min=1,
             help="The maximum number of downloads to run in parallel.",
         ),
     ] = 5,
