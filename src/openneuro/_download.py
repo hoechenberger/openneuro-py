@@ -983,7 +983,9 @@ def download(
     del tag
     tag = metadata["id"].replace(f"{dataset}:", "")
     if target_dir.exists():
-        target_dir_empty = len(list(target_dir.rglob("*"))) == 0
+        # Once we find the first child, we know the directory is not emoty, so we can
+        # stop iterating immediately.
+        target_dir_empty = next(target_dir.iterdir(), None) is None
 
         if not target_dir_empty:
             local_tag = _get_local_tag(dataset_id=dataset, dataset_dir=target_dir)
