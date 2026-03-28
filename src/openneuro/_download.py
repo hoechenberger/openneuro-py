@@ -371,7 +371,8 @@ async def _download_file(
                 retry_backoff *= 2
             else:
                 raise RuntimeError(
-                    f"Failed to download {outfile} after {max_retries} retries."
+                    f"Failed to download {outfile} from {url} "
+                    f"after {max_retries} retries."
                 ) from (err.__cause__ or err)
 
 
