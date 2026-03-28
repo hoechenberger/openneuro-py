@@ -29,7 +29,7 @@ import sys
 import time
 import warnings
 from collections.abc import Generator, Iterable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from difflib import get_close_matches
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -824,7 +824,7 @@ def _iterate_filenames(
     dataset_id: str,
     tag: str | None,
     max_retries: int,
-    max_concurrent_downloads: int,
+    executor: ThreadPoolExecutor,
     root: str = "",
     include: Iterable[str] = tuple(),
     parent_tree: str | None,
@@ -854,34 +854,30 @@ def _iterate_filenames(
         return
 
     # Fetch metadata for sibling directories in parallel.
-    with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as executor:
-        futures = {
-            executor.submit(
-                _get_download_metadata,
-                dataset_id=dataset_id,
-                tag=tag,
-                tree=f'"{d["key"]}"',
-                max_retries=max_retries,
-                check_snapshot=False,
-                metadata_timeout=metadata_timeout,
-                this_dir=d["filename"],
-            ): d
-            for d in dirs_to_fetch
-        }
-        for future in as_completed(futures):
-            directory = futures[future]
-            metadata = future.result()
-            yield from _iterate_filenames(
-                metadata["files"],
-                dataset_id=dataset_id,
-                tag=tag,
-                max_retries=max_retries,
-                max_concurrent_downloads=max_concurrent_downloads,
-                root=directory["filename"],
-                include=include,
-                parent_tree=directory["key"],
-                metadata_timeout=metadata_timeout,
-            )
+    metadatas = executor.map(
+        lambda d: _get_download_metadata(
+            dataset_id=dataset_id,
+            tag=tag,
+            tree=f'"{d["key"]}"',
+            max_retries=max_retries,
+            check_snapshot=False,
+            metadata_timeout=metadata_timeout,
+            this_dir=d["filename"],
+        ),
+        dirs_to_fetch,
+    )
+    for directory, metadata in zip(dirs_to_fetch, metadatas):
+        yield from _iterate_filenames(
+            metadata["files"],
+            dataset_id=dataset_id,
+            tag=tag,
+            max_retries=max_retries,
+            executor=executor,
+            root=directory["filename"],
+            include=include,
+            parent_tree=directory["key"],
+            metadata_timeout=metadata_timeout,
+        )
 
 
 def _match_include_exclude(
@@ -945,7 +941,8 @@ def download(
     max_retries
         Try the specified number of times to download a file before failing.
     max_concurrent_downloads
-        The maximum number of downloads to run in parallel.
+        The maximum number of downloads and metadata requests to run in
+        parallel.
     metadata_timeout
         Timeout in seconds for metadata queries.
 
@@ -1017,52 +1014,53 @@ def download(
     these_files = metadata["files"]
     del metadata
 
-    for file in tqdm(
-        _iterate_filenames(
-            these_files,
-            dataset_id=dataset,
-            tag=tag,
-            max_retries=max_retries,
-            max_concurrent_downloads=max_concurrent_downloads,
-            include=include,
-            parent_tree=None,
-            metadata_timeout=metadata_timeout,
-        ),
-        desc=_unicode(f"Traversing directories for {dataset}", end="", emoji="📁"),
-        unit=" entities",
-    ):
-        filename: str = file["filename"]  # TODO properly define metadata type
-        filenames.append(filename)
-
-        # Always include essential BIDS files.
-        if filename in (
-            "dataset_description.json",
-            "participants.tsv",
-            "participants.json",
-            "README",
-            "CHANGES",
+    with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as executor:
+        for file in tqdm(
+            _iterate_filenames(
+                these_files,
+                dataset_id=dataset,
+                tag=tag,
+                max_retries=max_retries,
+                executor=executor,
+                include=include,
+                parent_tree=None,
+                metadata_timeout=metadata_timeout,
+            ),
+            desc=_unicode(f"Traversing directories for {dataset}", end="", emoji="📁"),
+            unit=" entities",
         ):
-            files.append(file)
+            filename: str = file["filename"]  # TODO properly define metadata type
+            filenames.append(filename)
 
-            # Keep track of include matches.
-            matches_to_include = [
-                inc for inc in include if fnmatch.fnmatch(filename, inc)
-            ]
-            if filename in include:
-                include_counts[include.index(filename)] += 1
-            elif matches_to_include:
-                for match in matches_to_include:
-                    include_counts[include.index(match)] += 1
-            continue
+            # Always include essential BIDS files.
+            if filename in (
+                "dataset_description.json",
+                "participants.tsv",
+                "participants.json",
+                "README",
+                "CHANGES",
+            ):
+                files.append(file)
 
-        matches_keep, matches_exclude = _match_include_exclude(
-            filename, include=include, exclude=exclude
-        )
-        if (not include or any(matches_keep)) and not any(matches_exclude):
-            files.append(file)
-            # Keep track of include matches.
-            if any(matches_keep):
-                include_counts[matches_keep.index(True)] += 1
+                # Keep track of include matches.
+                matches_to_include = [
+                    inc for inc in include if fnmatch.fnmatch(filename, inc)
+                ]
+                if filename in include:
+                    include_counts[include.index(filename)] += 1
+                elif matches_to_include:
+                    for match in matches_to_include:
+                        include_counts[include.index(match)] += 1
+                continue
+
+            matches_keep, matches_exclude = _match_include_exclude(
+                filename, include=include, exclude=exclude
+            )
+            if (not include or any(matches_keep)) and not any(matches_exclude):
+                files.append(file)
+                # Keep track of include matches.
+                if any(matches_keep):
+                    include_counts[matches_keep.index(True)] += 1
 
     if include:
         for idx, count in enumerate(include_counts):
