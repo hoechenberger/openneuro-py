@@ -559,9 +559,12 @@ def _restore_ssl_context():
     """Restore the original ssl_context after tests that reload _download."""
     original_context = _download.ssl_context
     original_use_truststore = _download._use_truststore
+    original_truststore = getattr(_download, "truststore", None)
     yield
     _download.ssl_context = original_context
     _download._use_truststore = original_use_truststore
+    if original_truststore is not None:
+        _download.truststore = original_truststore
 
 
 def test_ssl_context_is_set():
