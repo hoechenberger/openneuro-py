@@ -29,7 +29,7 @@ import sys
 import time
 import warnings
 from collections.abc import Generator, Iterable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from difflib import get_close_matches
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -839,7 +839,7 @@ def _iterate_filenames(
     dataset_id: str,
     tag: str | None,
     max_retries: int,
-    executor: ThreadPoolExecutor,
+    executor: Executor,
     root: str = "",
     include: Iterable[str] = tuple(),
     parent_tree: str | None,
