@@ -957,7 +957,7 @@ def download(
         f"\n{msg_hello} This is openneuro-py {__version__}. "
         f"{msg_great_to_see_you}\n\n"
         f"   {msg_please} report {msg_problems} and {msg_bugs} at\n"
-        f"      https://github.com/hoechenberger/openneuro-py/issues\n"
+        f"      https://github.com/openneuro-py/openneuro-py/issues\n"
     )
     tqdm.write(msg)
     tqdm.write(_unicode(f"Preparing to download {dataset}", emoji="🌍"))
