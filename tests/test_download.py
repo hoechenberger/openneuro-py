@@ -669,6 +669,27 @@ def _make_fake_client(*, file_content: bytes, fail_head_n_times: int = 0):
     return client
 
 
+def test_max_concurrent_downloads_validation(tmp_path: Path):
+    """max_concurrent_downloads must be at least 1."""
+    with pytest.raises(ValueError, match="max_concurrent_downloads must be at least 1"):
+        download(dataset="ds000117", target_dir=tmp_path, max_concurrent_downloads=0)
+
+
+def test_max_concurrent_downloads_cli_validation():
+    """The CLI should reject --max-concurrent-downloads < 1."""
+    from typer.testing import CliRunner
+
+    from openneuro._cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["download", "--dataset=ds000117", "--max-concurrent-downloads=0"],
+    )
+    assert result.exit_code != 0
+    assert "0 is not" in result.output and "in the range x>=1" in result.output
+
+
 def test_semaphore_not_leaked_on_retry(tmp_path: Path):
     """Semaphore value must be preserved after retries.
 
