@@ -52,11 +52,19 @@ from openneuro._config import BASE_URL, get_token, init_config
 # The SSLContext construction may fail on some platforms (e.g., macOS) even when
 # truststore is importable:
 # https://github.com/sethmlarson/truststore/issues/167
+#
+# truststore temporarily sets verify_mode=CERT_NONE on the context during
+# wrap_socket(), so a single SSLContext shared across threads triggers spurious
+# InsecureRequestWarnings from urllib3.  Each TruststoreAdapter therefore gets
+# its own context; only the httpx path (async, single-threaded) keeps a
+# module-level instance.
+_use_truststore = True
 try:
     import truststore
 
     ssl_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 except (ImportError, OSError, ssl.SSLError) as exc:
+    _use_truststore = False
     ssl_context = ssl.create_default_context()
     warnings.warn(
         f"Could not use truststore for SSL verification ({exc!r}); "
@@ -66,8 +74,15 @@ except (ImportError, OSError, ssl.SSLError) as exc:
 
 
 class TruststoreAdapter(HTTPAdapter):
+    def __init__(self, **kwargs: Any) -> None:
+        if _use_truststore:
+            self._ssl_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        else:
+            self._ssl_context = ssl.create_default_context()
+        super().__init__(**kwargs)
+
     def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
-        pool_kwargs.setdefault("ssl_context", ssl_context)
+        pool_kwargs.setdefault("ssl_context", self._ssl_context)
         return super().init_poolmanager(
             connections,
             maxsize,
@@ -76,7 +91,7 @@ class TruststoreAdapter(HTTPAdapter):
         )
 
     def proxy_manager_for(self, proxy, **proxy_kwargs):
-        proxy_kwargs.setdefault("ssl_context", ssl_context)
+        proxy_kwargs.setdefault("ssl_context", self._ssl_context)
         return super().proxy_manager_for(proxy, **proxy_kwargs)
 
 

@@ -568,20 +568,18 @@ def test_ssl_context_is_set():
 
 
 def test_truststore_adapter_passes_ssl_context():
-    """Test that TruststoreAdapter passes ssl_context to the pool manager."""
+    """Test that TruststoreAdapter passes its own ssl_context to the pool manager."""
     adapter = _download.TruststoreAdapter()
     with patch.object(
         HTTPAdapter,
         "init_poolmanager",
     ) as mock_init:
         adapter.init_poolmanager(1, 1)
-        mock_init.assert_called_once_with(
-            1, 1, False, ssl_context=_download.ssl_context
-        )
+        mock_init.assert_called_once_with(1, 1, False, ssl_context=adapter._ssl_context)
 
 
 def test_truststore_adapter_passes_ssl_context_to_proxy():
-    """Test that TruststoreAdapter passes ssl_context to proxy managers."""
+    """Test that TruststoreAdapter passes its own ssl_context to proxy managers."""
     adapter = _download.TruststoreAdapter()
     with patch.object(
         HTTPAdapter,
@@ -589,8 +587,15 @@ def test_truststore_adapter_passes_ssl_context_to_proxy():
     ) as mock_proxy:
         adapter.proxy_manager_for("https://proxy.example.com")
         mock_proxy.assert_called_once_with(
-            "https://proxy.example.com", ssl_context=_download.ssl_context
+            "https://proxy.example.com", ssl_context=adapter._ssl_context
         )
+
+
+def test_truststore_adapter_creates_unique_contexts():
+    """Test that each TruststoreAdapter instance gets its own SSLContext."""
+    adapter_a = _download.TruststoreAdapter()
+    adapter_b = _download.TruststoreAdapter()
+    assert adapter_a._ssl_context is not adapter_b._ssl_context
 
 
 @pytest.mark.usefixtures("_restore_ssl_context")
