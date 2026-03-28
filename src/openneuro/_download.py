@@ -355,8 +355,10 @@ async def _download_file(
             return
         except _RetryableError as err:
             if attempt < max_retries:
-                if isinstance(err.__cause__, allowed_retry_exceptions):
+                if isinstance(err.__cause__, httpx.TimeoutException):
                     reason = "Request timed out"
+                elif err.__cause__ is not None:
+                    reason = str(err.__cause__) or "Error"
                 else:
                     reason = str(err) or "Error"
                 _write_retry(
