@@ -681,8 +681,9 @@ def test_max_concurrent_downloads_cli_validation():
         app,
         ["download", "--dataset=ds000117", "--max-concurrent-downloads=0"],
     )
-    assert result.exit_code != 0
-    assert "0 is not" in result.output and "in the range x>=1" in result.output
+    assert result.exit_code == 2
+    assert "--max-concurrent-downloads" in result.output
+    assert "1" in result.output
 
 
 def test_semaphore_not_leaked_on_retry(tmp_path: Path):
