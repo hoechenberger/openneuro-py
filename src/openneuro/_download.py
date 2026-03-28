@@ -983,7 +983,7 @@ def download(
     del tag
     tag = metadata["id"].replace(f"{dataset}:", "")
     if target_dir.exists():
-        # Once we find the first child, we know the directory is not emoty, so we can
+        # Once we find the first child, we know the directory is not empty, so we can
         # stop iterating immediately.
         target_dir_empty = next(target_dir.iterdir(), None) is None
 
