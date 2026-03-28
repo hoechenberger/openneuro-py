@@ -3,7 +3,8 @@ name = "openneuro-py"
 description = "A Python client for OpenNeuro."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 authors = [
   { name = "Richard Höchenberger", email = "richard.hoechenberger@gmail.com" },
 ]
