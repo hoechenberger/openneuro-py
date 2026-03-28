@@ -556,7 +556,10 @@ def test_download_file_count(
 
 @pytest.fixture
 def _restore_ssl_context():
-    """Restore the original ssl_context after tests that reload _download."""
+    """Restore SSL-related state after tests that reload _download.
+
+    Restores ssl_context, _use_truststore, and truststore.
+    """
     original_context = _download.ssl_context
     original_use_truststore = _download._use_truststore
     original_truststore = getattr(_download, "truststore", None)
