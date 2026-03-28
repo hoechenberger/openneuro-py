@@ -56,7 +56,10 @@ def download_cli(
     max_concurrent_downloads: Annotated[
         int,
         typer.Option(
-            help="The maximum number of downloads to run in parallel.",
+            help=(
+                "The maximum number of downloads and metadata requests"
+                " to run in parallel."
+            ),
         ),
     ] = 5,
     metadata_timeout: Annotated[
