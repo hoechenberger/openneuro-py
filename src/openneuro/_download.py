@@ -869,8 +869,8 @@ def _iterate_filenames(
         return
 
     # Fetch metadata for sibling directories in parallel.
-    metadatas = executor.map(
-        lambda d: _get_download_metadata(
+    def _fetch_dir_metadata(d: dict[str, Any]) -> dict[str, Any]:
+        return _get_download_metadata(
             dataset_id=dataset_id,
             tag=tag,
             tree=f'"{d["key"]}"',
@@ -878,9 +878,9 @@ def _iterate_filenames(
             check_snapshot=False,
             metadata_timeout=metadata_timeout,
             this_dir=d["filename"],
-        ),
-        dirs_to_fetch,
-    )
+        )
+
+    metadatas = executor.map(_fetch_dir_metadata, dirs_to_fetch)
     for directory, metadata in zip(dirs_to_fetch, metadatas):
         yield from _iterate_filenames(
             metadata["files"],
