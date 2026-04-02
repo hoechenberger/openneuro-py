@@ -211,12 +211,12 @@ def _safe_query(
     return response_json, request_timed_out
 
 
-def _write_retry(*, what: str, retry: int, backoff: float) -> None:
+def _write_retry(*, what: str, reason: str, retry: int, backoff: float) -> None:
     remaining = "1 retry remains" if retry == 1 else f"{retry} retries remain"
     remaining += f", backing off {backoff:0.1f}s"
     tqdm.write(
         _unicode(
-            f"Request timed out while {what}, retrying ({remaining})",
+            f"{reason} while {what}, retrying ({remaining})",
             emoji="🔄",
         )
     )
@@ -307,7 +307,12 @@ def _retry_request(
         if not request_timed_out:
             break
         if retry > 0:
-            _write_retry(what=what, retry=retry, backoff=retry_backoff)
+            _write_retry(
+                what=what,
+                reason="Request timed out",
+                retry=retry,
+                backoff=retry_backoff,
+            )
             time.sleep(retry_backoff)
             retry_backoff *= 2
     else:
@@ -367,8 +372,15 @@ async def _download_file(
             return
         except _RetryableError as err:
             if attempt < max_retries:
+                if isinstance(err.__cause__, httpx.TimeoutException):
+                    reason = "Request timed out"
+                elif err.__cause__ is not None:
+                    reason = str(err.__cause__) or "Error"
+                else:
+                    reason = str(err) or "Error"
                 _write_retry(
                     what=f"downloading {outfile}",
+                    reason=reason,
                     retry=max_retries - attempt,
                     backoff=retry_backoff,
                 )
@@ -376,7 +388,8 @@ async def _download_file(
                 retry_backoff *= 2
             else:
                 raise RuntimeError(
-                    f"Failed to download {outfile} after {max_retries} retries."
+                    f"Failed to download {outfile} from {url} "
+                    f"after {max_retries} retries."
                 ) from (err.__cause__ or err)
 
 
@@ -499,10 +512,7 @@ async def _attempt_download(
                     if not response.is_error:
                         pass  # All good!
                     elif response.status_code in allowed_retry_codes:
-                        raise _RetryableError(
-                            f"Retryable HTTP error {response.status_code} "
-                            f"when trying to download {outfile} from {url}"
-                        )
+                        raise _RetryableError(f"HTTP {response.status_code}")
                     else:
                         raise RuntimeError(
                             f"Error {response.status_code} when trying to "
@@ -962,6 +972,9 @@ def download(
         Timeout in seconds for metadata queries.
 
     """
+    if max_concurrent_downloads < 1:
+        raise ValueError("max_concurrent_downloads must be at least 1.")
+
     msg_problems = "problems 🤯" if stdout_unicode else "problems"
     msg_bugs = "bugs 🪲" if stdout_unicode else "bugs"
     msg_hello = "👋 Hello!" if stdout_unicode else "Hello!"
@@ -1003,7 +1016,9 @@ def download(
     del tag
     tag = metadata["id"].replace(f"{dataset}:", "")
     if target_dir.exists():
-        target_dir_empty = len(list(target_dir.rglob("*"))) == 0
+        # Once we find the first child, we know the directory is not empty, so we can
+        # stop iterating immediately.
+        target_dir_empty = next(target_dir.iterdir(), None) is None
 
         if not target_dir_empty:
             local_tag = _get_local_tag(dataset_id=dataset, dataset_dir=target_dir)
