@@ -952,6 +952,9 @@ def download(
         Timeout in seconds for metadata queries.
 
     """
+    if max_concurrent_downloads < 1:
+        raise ValueError("max_concurrent_downloads must be at least 1.")
+
     msg_problems = "problems 🤯" if stdout_unicode else "problems"
     msg_bugs = "bugs 🪲" if stdout_unicode else "bugs"
     msg_hello = "👋 Hello!" if stdout_unicode else "Hello!"
@@ -993,7 +996,9 @@ def download(
     del tag
     tag = metadata["id"].replace(f"{dataset}:", "")
     if target_dir.exists():
-        target_dir_empty = len(list(target_dir.rglob("*"))) == 0
+        # Once we find the first child, we know the directory is not empty, so we can
+        # stop iterating immediately.
+        target_dir_empty = next(target_dir.iterdir(), None) is None
 
         if not target_dir_empty:
             local_tag = _get_local_tag(dataset_id=dataset, dataset_dir=target_dir)
