@@ -29,6 +29,7 @@ import sys
 import time
 import warnings
 from collections.abc import Generator, Iterable
+from concurrent.futures import Executor, ThreadPoolExecutor
 from difflib import get_close_matches
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -51,11 +52,19 @@ from openneuro._config import BASE_URL, get_token, init_config
 # The SSLContext construction may fail on some platforms (e.g., macOS) even when
 # truststore is importable:
 # https://github.com/sethmlarson/truststore/issues/167
+#
+# truststore temporarily sets verify_mode=CERT_NONE on the context during
+# wrap_socket(), so a single SSLContext shared across threads triggers spurious
+# InsecureRequestWarnings from urllib3.  Each TruststoreAdapter therefore gets
+# its own context; only the httpx path (async, single-threaded) keeps a
+# module-level instance.
+_use_truststore = True
 try:
     import truststore
 
     ssl_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 except (ImportError, OSError, ssl.SSLError) as exc:
+    _use_truststore = False
     ssl_context = ssl.create_default_context()
     warnings.warn(
         f"Could not use truststore for SSL verification ({exc!r}); "
@@ -65,8 +74,15 @@ except (ImportError, OSError, ssl.SSLError) as exc:
 
 
 class TruststoreAdapter(HTTPAdapter):
+    def __init__(self, **kwargs: Any) -> None:
+        if _use_truststore:
+            self._ssl_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        else:
+            self._ssl_context = ssl.create_default_context()
+        super().__init__(**kwargs)
+
     def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
-        pool_kwargs.setdefault("ssl_context", ssl_context)
+        pool_kwargs.setdefault("ssl_context", self._ssl_context)
         return super().init_poolmanager(
             connections,
             maxsize,
@@ -75,7 +91,7 @@ class TruststoreAdapter(HTTPAdapter):
         )
 
     def proxy_manager_for(self, proxy, **proxy_kwargs):
-        proxy_kwargs.setdefault("ssl_context", ssl_context)
+        proxy_kwargs.setdefault("ssl_context", self._ssl_context)
         return super().proxy_manager_for(proxy, **proxy_kwargs)
 
 
@@ -120,6 +136,7 @@ user_agent_header: dict[str, str] = {"user-agent": f"openneuro-py/{__version__}"
 # GraphQL endpoint and queries.
 
 gql_url = "https://openneuro.org/crn/graphql"
+_MAX_CONCURRENT_METADATA_REQUESTS = 10
 
 dataset_query_template = string.Template(
     """
@@ -833,6 +850,7 @@ def _iterate_filenames(
     dataset_id: str,
     tag: str | None,
     max_retries: int,
+    executor: Executor,
     root: str = "",
     include: Iterable[str] = tuple(),
     parent_tree: str | None,
@@ -849,37 +867,39 @@ def _iterate_filenames(
         else:
             yield entity
 
+    # Filter to directories we actually need to traverse.
+    dirs_to_fetch = []
     for directory in directories:
         if include:
             dir_path = directory["filename"]
-
-            # Check if any of the include patterns match or are parents
-            # of this directory
-            should_traverse = False
-            for inc in include:
-                if _traverse_directory(dir_path, inc):
-                    should_traverse = True
-                    break
-
-            if not should_traverse:
+            if not any(_traverse_directory(dir_path, inc) for inc in include):
                 continue
-        # Query filenames
-        this_dir = directory["filename"]
-        metadata = _get_download_metadata(
+        dirs_to_fetch.append(directory)
+
+    if not dirs_to_fetch:
+        return
+
+    # Fetch metadata for sibling directories in parallel.
+    def _fetch_dir_metadata(d: dict[str, Any]) -> dict[str, Any]:
+        return _get_download_metadata(
             dataset_id=dataset_id,
             tag=tag,
-            tree=f'"{directory["key"]}"',
+            tree=f'"{d["key"]}"',
             max_retries=max_retries,
             check_snapshot=False,
             metadata_timeout=metadata_timeout,
-            this_dir=this_dir,
+            this_dir=d["filename"],
         )
+
+    metadatas = executor.map(_fetch_dir_metadata, dirs_to_fetch)
+    for directory, metadata in zip(dirs_to_fetch, metadatas):
         yield from _iterate_filenames(
             metadata["files"],
             dataset_id=dataset_id,
             tag=tag,
             max_retries=max_retries,
-            root=this_dir,
+            executor=executor,
+            root=directory["filename"],
             include=include,
             parent_tree=directory["key"],
             metadata_timeout=metadata_timeout,
@@ -1024,51 +1044,53 @@ def download(
     these_files = metadata["files"]
     del metadata
 
-    for file in tqdm(
-        _iterate_filenames(
-            these_files,
-            dataset_id=dataset,
-            tag=tag,
-            max_retries=max_retries,
-            include=include,
-            parent_tree=None,
-            metadata_timeout=metadata_timeout,
-        ),
-        desc=_unicode(f"Traversing directories for {dataset}", end="", emoji="📁"),
-        unit=" entities",
-    ):
-        filename: str = file["filename"]  # TODO properly define metadata type
-        filenames.append(filename)
-
-        # Always include essential BIDS files.
-        if filename in (
-            "dataset_description.json",
-            "participants.tsv",
-            "participants.json",
-            "README",
-            "CHANGES",
+    with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_METADATA_REQUESTS) as executor:
+        for file in tqdm(
+            _iterate_filenames(
+                these_files,
+                dataset_id=dataset,
+                tag=tag,
+                max_retries=max_retries,
+                executor=executor,
+                include=include,
+                parent_tree=None,
+                metadata_timeout=metadata_timeout,
+            ),
+            desc=_unicode(f"Traversing directories for {dataset}", end="", emoji="📁"),
+            unit=" entities",
         ):
-            files.append(file)
+            filename: str = file["filename"]  # TODO properly define metadata type
+            filenames.append(filename)
 
-            # Keep track of include matches.
-            matches_to_include = [
-                inc for inc in include if fnmatch.fnmatch(filename, inc)
-            ]
-            if filename in include:
-                include_counts[include.index(filename)] += 1
-            elif matches_to_include:
-                for match in matches_to_include:
-                    include_counts[include.index(match)] += 1
-            continue
+            # Always include essential BIDS files.
+            if filename in (
+                "dataset_description.json",
+                "participants.tsv",
+                "participants.json",
+                "README",
+                "CHANGES",
+            ):
+                files.append(file)
 
-        matches_keep, matches_exclude = _match_include_exclude(
-            filename, include=include, exclude=exclude
-        )
-        if (not include or any(matches_keep)) and not any(matches_exclude):
-            files.append(file)
-            # Keep track of include matches.
-            if any(matches_keep):
-                include_counts[matches_keep.index(True)] += 1
+                # Keep track of include matches.
+                matches_to_include = [
+                    inc for inc in include if fnmatch.fnmatch(filename, inc)
+                ]
+                if filename in include:
+                    include_counts[include.index(filename)] += 1
+                elif matches_to_include:
+                    for match in matches_to_include:
+                        include_counts[include.index(match)] += 1
+                continue
+
+            matches_keep, matches_exclude = _match_include_exclude(
+                filename, include=include, exclude=exclude
+            )
+            if (not include or any(matches_keep)) and not any(matches_exclude):
+                files.append(file)
+                # Keep track of include matches.
+                if any(matches_keep):
+                    include_counts[matches_keep.index(True)] += 1
 
     if include:
         for idx, count in enumerate(include_counts):
