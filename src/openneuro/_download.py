@@ -35,6 +35,7 @@ from tqdm.auto import tqdm
 
 from openneuro import __version__, _glob
 from openneuro._config import get_token, init_config
+from openneuro._models import FileInfo, Snapshot, SnapshotListItem
 
 # Use system trust store for SSL certificates, which is important for users in
 # enterprise environments with custom CAs.
@@ -200,8 +201,9 @@ def _check_snapshot_exists(
         retry_backoff=retry_backoff,
     )
 
-    snapshots = response_json["data"]["dataset"]["snapshots"]
-    tags = [s["id"].replace(f"{dataset_id}:", "") for s in snapshots]
+    raw_snapshots = response_json["data"]["dataset"]["snapshots"]
+    snapshots = [SnapshotListItem.model_validate(s) for s in raw_snapshots]
+    tags = [s.id.replace(f"{dataset_id}:", "") for s in snapshots]
 
     if tag not in tags:
         raise RuntimeError(
@@ -218,7 +220,7 @@ def _get_download_metadata(
     max_retries: int,
     retry_backoff: float = 0.5,
     metadata_timeout: float = 15.0,
-) -> dict[str, Any]:
+) -> Snapshot:
     """Retrieve dataset metadata required for the download."""
     if tag is None:
         query = dataset_query_template.substitute(dataset_id=dataset_id)
@@ -239,11 +241,10 @@ def _get_download_metadata(
         retry_backoff=retry_backoff,
     )
     if tag is None:
-        out = response_json["data"]["dataset"]["latestSnapshot"]
+        raw = response_json["data"]["dataset"]["latestSnapshot"]
     else:
-        out = response_json["data"]["snapshot"]
-    assert isinstance(out, dict)
-    return out
+        raw = response_json["data"]["snapshot"]
+    return Snapshot.model_validate(raw)
 
 
 def _retry_request(
@@ -585,7 +586,7 @@ async def _retrieve_and_write_to_disk(
 async def _download_files(
     *,
     target_dir: Path,
-    files: Iterable[dict[str, Any]],
+    files: Iterable[FileInfo],
     verify_hash: bool,
     verify_size: bool,
     max_retries: int,
@@ -601,14 +602,14 @@ async def _download_files(
     normalized_query_str = " ".join(shlex.split(query_str, posix=False))
 
     for file in files:
-        filename = Path(file["filename"])
-        api_file_size = file["size"]
-        if not file.get("urls"):
+        filename = Path(file.filename)
+        api_file_size = file.size
+        if not file.urls:
             raise RuntimeError(
                 f"No download URLs for {filename}. The file may have been "
                 "removed from the dataset."
             )
-        url = file["urls"][0]
+        url = file.urls[0]
 
         outfile = target_dir / filename
         outfile.parent.mkdir(parents=True, exist_ok=True)
@@ -782,7 +783,7 @@ def download(
         metadata_timeout=metadata_timeout,
     )
     del tag
-    tag = metadata["id"].replace(f"{dataset}:", "")
+    tag = metadata.id.replace(f"{dataset}:", "")
     if target_dir.exists():
         # Once we find the first child, we know the directory is not empty, so we can
         # stop iterating immediately.
@@ -814,9 +815,9 @@ def download(
         "CHANGES",
     }
 
-    all_files = metadata["files"]
+    all_files = metadata.files
     del metadata
-    filenames = [f["filename"] for f in all_files]
+    filenames = [f.filename for f in all_files]
 
     if include:
         included = _glob.glob_filter(filenames, include)
@@ -831,7 +832,7 @@ def download(
         excluded_set = set()
 
     keep = (included_set - excluded_set) | (essential_files & set(filenames))
-    files: list[dict[str, Any]] = [f for f in all_files if f["filename"] in keep]
+    files: list[FileInfo] = [f for f in all_files if f.filename in keep]
 
     if include:
         for pattern, matches in included.items():
