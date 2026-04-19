@@ -31,6 +31,7 @@ from typing import Any, Literal
 
 import aiofiles
 import httpx
+from pydantic import ValidationError
 from tqdm.auto import tqdm
 
 from openneuro import __version__, _glob
@@ -202,7 +203,15 @@ def _check_snapshot_exists(
     )
 
     raw_snapshots = response_json["data"]["dataset"]["snapshots"]
-    snapshots = [SnapshotListItem.model_validate(s) for s in raw_snapshots]
+    try:
+        snapshots = [SnapshotListItem.model_validate(s) for s in raw_snapshots]
+    except ValidationError as e:
+        raise RuntimeError(
+            "The OpenNeuro API returned an unexpected response. "
+            "Please open an issue at "
+            "https://github.com/openneuro-py/openneuro-py/issues\n\n"
+            f"Details: {e}"
+        ) from e
     tags = [s.id.replace(f"{dataset_id}:", "") for s in snapshots]
 
     if tag not in tags:
@@ -244,7 +253,15 @@ def _get_download_metadata(
         raw = response_json["data"]["dataset"]["latestSnapshot"]
     else:
         raw = response_json["data"]["snapshot"]
-    return Snapshot.model_validate(raw)
+    try:
+        return Snapshot.model_validate(raw)
+    except ValidationError as e:
+        raise RuntimeError(
+            "The OpenNeuro API returned an unexpected response. "
+            "Please open an issue at "
+            "https://github.com/openneuro-py/openneuro-py/issues\n\n"
+            f"Details: {e}"
+        ) from e
 
 
 def _retry_request(
