@@ -36,7 +36,7 @@ from tqdm.auto import tqdm
 
 from openneuro import __version__, _glob
 from openneuro._config import get_token, init_config
-from openneuro._models import FileInfo, GraphQLError, Snapshot, SnapshotListItem
+from openneuro._models import FileInfo, Snapshot
 
 # Use system trust store for SSL certificates, which is important for users in
 # enterprise environments with custom CAs.
@@ -203,16 +203,7 @@ def _check_snapshot_exists(
     )
 
     raw_snapshots = response_json["data"]["dataset"]["snapshots"]
-    try:
-        snapshots = [SnapshotListItem.model_validate(s) for s in raw_snapshots]
-    except ValidationError as e:
-        raise RuntimeError(
-            "The OpenNeuro API returned an unexpected response. "
-            "Please open an issue at "
-            "https://github.com/openneuro-py/openneuro-py/issues\n\n"
-            f"Details: {e}"
-        ) from e
-    tags = [s.id.replace(f"{dataset_id}:", "") for s in snapshots]
+    tags = [s["id"].replace(f"{dataset_id}:", "") for s in raw_snapshots]
 
     if tag not in tags:
         raise RuntimeError(
@@ -273,11 +264,11 @@ def _retry_request(
         # Sometimes we do get a response, but it contains a gateway timeout error
         # message (504 or 502 status code)
         if response_json is not None and "errors" in response_json:
-            error = GraphQLError.model_validate(response_json["errors"][0])
+            error_message = response_json["errors"][0]["message"]
             if (
-                error.message.startswith(("504", "502", "connect ECONNREFUSED"))
-                or error.message.endswith("due to timeout")
-                or error.message == "fetch failed"
+                error_message.startswith(("504", "502", "connect ECONNREFUSED"))
+                or error_message.endswith("due to timeout")
+                or error_message == "fetch failed"
             ):
                 request_timed_out = True
         if not request_timed_out:
@@ -297,8 +288,8 @@ def _retry_request(
         raise RuntimeError(f"Error when {what}.")
     assert isinstance(response_json, dict)
     if "errors" in response_json:
-        error = GraphQLError.model_validate(response_json["errors"][0])
-        if error.message == "You do not have access to read this dataset.":
+        error_message = response_json["errors"][0]["message"]
+        if error_message == "You do not have access to read this dataset.":
             try:
                 # Do we have an API token?
                 get_token()
@@ -317,7 +308,7 @@ def _retry_request(
                     f"not log you in. {e}"
                 )
         else:
-            raise RuntimeError(f'Query failed when {what}: "{error.message}"')
+            raise RuntimeError(f'Query failed when {what}: "{error_message}"')
     return response_json
 
 

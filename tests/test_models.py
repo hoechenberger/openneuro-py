@@ -1,18 +1,7 @@
 """Tests for openneuro._models Pydantic response models."""
 
-from openneuro._models import (
-    FileInfo,
-    GraphQLError,
-    Snapshot,
-    SnapshotListItem,
-)
+from openneuro._models import FileInfo, Snapshot
 from tests.utils import load_json
-
-
-def test_graphql_error():
-    """Parse a minimal error payload."""
-    err = GraphQLError.model_validate({"message": "Something went wrong"})
-    assert err.message == "Something went wrong"
 
 
 def test_file_info():
@@ -38,9 +27,3 @@ def test_snapshot_from_mock_data():
     assert snap.id == "ds000117:1.1.0"
     assert len(snap.files) > 0
     assert all(isinstance(f, FileInfo) for f in snap.files)
-
-
-def test_snapshot_list_item():
-    """Parse a minimal snapshot list item."""
-    item = SnapshotListItem.model_validate({"id": "ds000117:1.0.0"})
-    assert item.id == "ds000117:1.0.0"
