@@ -8,7 +8,7 @@ traversed with plain dict access in the download module.
 from pydantic import BaseModel
 
 
-class FileInfo(BaseModel):
+class DatasetFile(BaseModel):
     """Metadata for a single file in a dataset snapshot."""
 
     filename: str
@@ -21,4 +21,4 @@ class Snapshot(BaseModel):
     """A dataset snapshot containing an ID and a list of files."""
 
     id: str
-    files: list[FileInfo]
+    files: list[DatasetFile]

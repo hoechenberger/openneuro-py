@@ -36,7 +36,7 @@ from tqdm.auto import tqdm
 
 from openneuro import __version__, _glob
 from openneuro._config import get_token, init_config
-from openneuro._models import FileInfo, Snapshot
+from openneuro._models import DatasetFile, Snapshot
 
 # Use system trust store for SSL certificates, which is important for users in
 # enterprise environments with custom CAs.
@@ -595,7 +595,7 @@ async def _retrieve_and_write_to_disk(
 async def _download_files(
     *,
     target_dir: Path,
-    files: Iterable[FileInfo],
+    files: Iterable[DatasetFile],
     verify_hash: bool,
     verify_size: bool,
     max_retries: int,
@@ -841,7 +841,7 @@ def download(
         excluded_set = set()
 
     keep = (included_set - excluded_set) | (essential_files & set(filenames))
-    files: list[FileInfo] = [f for f in all_files if f.filename in keep]
+    files: list[DatasetFile] = [f for f in all_files if f.filename in keep]
 
     if include:
         for pattern, matches in included.items():

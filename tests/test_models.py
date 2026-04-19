@@ -1,12 +1,12 @@
 """Tests for openneuro._models Pydantic response models."""
 
-from openneuro._models import FileInfo, Snapshot
+from openneuro._models import DatasetFile, Snapshot
 from tests.utils import load_json
 
 
 def test_file_info():
     """Parse a complete file-info payload."""
-    fi = FileInfo.model_validate(
+    fi = DatasetFile.model_validate(
         {
             "filename": "sub-01/anat/T1w.nii.gz",
             "urls": ["https://example.com/file"],
@@ -26,4 +26,4 @@ def test_snapshot_from_mock_data():
     snap = Snapshot.model_validate(data)
     assert snap.id == "ds000117:1.1.0"
     assert len(snap.files) > 0
-    assert all(isinstance(f, FileInfo) for f in snap.files)
+    assert all(isinstance(f, DatasetFile) for f in snap.files)
