@@ -385,10 +385,12 @@ async def _attempt_download(
         # Phase 1: HEAD request to get remote file hash and size.
         # The file sizes provided via the API often do not match the sizes
         # reported by the HTTP server. Rely on the HTTP server sizes.
+        # HEAD requests are not gated by the semaphore — they return tiny
+        # responses and should not compete with actual file downloads for
+        # concurrency slots.
         try:
-            async with semaphore:
-                response = await client.head(url, headers=user_agent_header)
-                headers = response.headers
+            response = await client.head(url, headers=user_agent_header)
+            headers = response.headers
         except allowed_retry_exceptions as exc:
             raise _RetryableError from exc
 
