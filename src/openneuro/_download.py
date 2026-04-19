@@ -94,6 +94,8 @@ allowed_retry_exceptions = (
 )
 user_agent_header: dict[str, str] = {"user-agent": f"openneuro-py/{__version__}"}
 
+_MAX_CONCURRENT_HEAD_REQUESTS = 50
+
 # GraphQL endpoint and queries.
 
 gql_url = "https://openneuro.org/crn/graphql"
@@ -602,7 +604,7 @@ async def _download_files(
     semaphore = asyncio.Semaphore(max_concurrent_downloads)
     # HEAD requests use a separate, higher-limit semaphore so they complete
     # quickly without blocking file downloads.
-    head_semaphore = asyncio.Semaphore(50)
+    head_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_HEAD_REQUESTS)
     download_tasks = []
     normalized_query_str = " ".join(shlex.split(query_str, posix=False))
 

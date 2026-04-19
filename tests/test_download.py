@@ -853,3 +853,6 @@ def test_semaphore_not_leaked_on_retry(tmp_path: Path):
     assert semaphore._value == 2, (
         f"Semaphore leaked: expected value 2, got {semaphore._value}"
     )
+    assert head_semaphore._value == 50, (
+        f"HEAD semaphore leaked: expected value 50, got {head_semaphore._value}"
+    )
