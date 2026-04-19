@@ -316,7 +316,7 @@ def _retry_request(
 async def _download_file(
     *,
     url: str,
-    api_file_size: int,
+    api_file_size: int | None,
     outfile: Path,
     verify_hash: bool,
     verify_size: bool,
@@ -364,7 +364,7 @@ async def _download_file(
 async def _attempt_download(
     *,
     url: str,
-    api_file_size: int,
+    api_file_size: int | None,
     outfile: Path,
     verify_hash: bool,
     verify_size: bool,
@@ -417,8 +417,8 @@ async def _attempt_download(
             remote_file_size = int(response.headers["content-length"])
         except KeyError:
             # The server doesn't always set a Content-Length header.
-            remote_file_size = api_file_size
-        if remote_file_size != api_file_size:
+            remote_file_size = api_file_size if api_file_size is not None else 0
+        if api_file_size is not None and remote_file_size != api_file_size:
             tqdm.write(
                 _unicode(
                     f"Warning: size mismatch for {outfile.name}: "

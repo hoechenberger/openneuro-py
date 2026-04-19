@@ -12,8 +12,8 @@ class FileInfo(BaseModel):
     """Metadata for a single file in a dataset snapshot."""
 
     filename: str
-    urls: list[str]
-    size: int
+    urls: list[str] | None = None
+    size: int | None = None
     id: str
 
 
