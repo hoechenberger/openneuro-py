@@ -4,8 +4,8 @@ from openneuro._models import DatasetFile, Snapshot
 from tests.utils import load_json
 
 
-def test_file_info():
-    """Parse a complete file-info payload."""
+def test_dataset_file():
+    """Parse a complete DatasetFile payload."""
     fi = DatasetFile.model_validate(
         {
             "filename": "sub-01/anat/T1w.nii.gz",
