@@ -247,11 +247,12 @@ def _get_download_metadata(
     try:
         return Snapshot.model_validate(raw)
     except ValidationError as e:
+        sanitized_details = json.dumps(e.errors(include_input=False), indent=2)
         raise RuntimeError(
             "The OpenNeuro API returned an unexpected response. "
             "Please open an issue at "
             "https://github.com/openneuro-py/openneuro-py/issues\n\n"
-            f"Details: {e}"
+            f"Validation details: {sanitized_details}"
         ) from e
 
 
