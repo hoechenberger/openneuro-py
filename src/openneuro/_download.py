@@ -388,9 +388,6 @@ async def _attempt_download(
         # Phase 1: HEAD request to get remote file hash and size.
         # The file sizes provided via the API often do not match the sizes
         # reported by the HTTP server. Rely on the HTTP server sizes.
-        # HEAD requests use a separate semaphore with a higher limit than
-        # file downloads — they return tiny responses and should not compete
-        # with actual file downloads for concurrency slots.
         try:
             async with head_semaphore:
                 response = await client.head(url, headers=user_agent_header)
