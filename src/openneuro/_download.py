@@ -405,21 +405,18 @@ async def _attempt_download(
             raise _RetryableError from exc
 
         # Try to get the S3 MD5 hash for the file.
-        try:
-            etag_hash = headers["etag"].strip('"')
-            if len(etag_hash) == 32:
-                remote_file_hash = etag_hash
-            else:  # It's not an MD5 hash.
-                remote_file_hash = None
-        except KeyError:
-            remote_file_hash = None
+        etag = headers.get("etag")
+        etag_hash = etag.strip('"') if etag is not None else None
+        remote_file_hash = (
+            etag_hash if (etag_hash is not None and len(etag_hash) == 32) else None
+        )
 
-        # Get the Content-Length.
-        try:
-            remote_file_size: int | None = int(response.headers["content-length"])
-        except KeyError:
-            # The server doesn't always set a Content-Length header.
-            remote_file_size = api_file_size
+        # The server doesn't always set a Content-Length header.
+        content_length = response.headers.get("content-length")
+        remote_file_size = (
+            api_file_size if content_length is None else int(content_length)
+        )
+
         if api_file_size is not None and remote_file_size != api_file_size:
             tqdm.write(
                 _unicode(
