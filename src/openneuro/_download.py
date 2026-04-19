@@ -247,7 +247,9 @@ def _get_download_metadata(
     try:
         return Snapshot.model_validate(raw)
     except ValidationError as e:
-        sanitized_details = json.dumps(e.errors(include_input=False), indent=2)
+        sanitized_details = json.dumps(
+            e.errors(include_input=False), indent=2, default=str
+        )
         raise RuntimeError(
             "The OpenNeuro API returned an unexpected response. "
             "Please open an issue at "
@@ -414,10 +416,10 @@ async def _attempt_download(
 
         # Get the Content-Length.
         try:
-            remote_file_size = int(response.headers["content-length"])
+            remote_file_size: int | None = int(response.headers["content-length"])
         except KeyError:
             # The server doesn't always set a Content-Length header.
-            remote_file_size = api_file_size if api_file_size is not None else 0
+            remote_file_size = api_file_size
         if api_file_size is not None and remote_file_size != api_file_size:
             tqdm.write(
                 _unicode(
@@ -434,7 +436,11 @@ async def _attempt_download(
         request_headers["Accept-Encoding"] = ""  # Disable compression
 
         mode: Literal["ab", "wb"] = "wb"
-        if outfile.exists() and local_file_size == remote_file_size:
+        if (
+            outfile.exists()
+            and remote_file_size is not None
+            and local_file_size == remote_file_size
+        ):
             hash_ = hashlib.md5()
 
             if verify_hash and remote_file_hash is not None:
@@ -457,7 +463,11 @@ async def _attempt_download(
                 # Download complete, skip.
                 tqdm.write(f"Skipping {outfile.name}: already downloaded.")
                 return
-        elif outfile.exists() and local_file_size < remote_file_size:
+        elif (
+            outfile.exists()
+            and remote_file_size is not None
+            and local_file_size < remote_file_size
+        ):
             # Download incomplete, resume.
             desc = f"Resuming {outfile.name}"
             request_headers["Range"] = f"bytes={local_file_size}-"
@@ -519,7 +529,7 @@ async def _retrieve_and_write_to_disk(
     mode: Literal["ab", "wb"],
     desc: str,
     local_file_size: int,
-    remote_file_size: int,
+    remote_file_size: int | None,
     remote_file_hash: str | None,
     verify_hash: bool,
     verify_size: bool,
@@ -564,7 +574,7 @@ async def _retrieve_and_write_to_disk(
                 )
 
         # Check the file was completely downloaded.
-        if verify_size:
+        if verify_size and remote_file_size is not None:
             await f.flush()
             local_file_size = outfile.stat().st_size
             if local_file_size != remote_file_size:
