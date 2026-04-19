@@ -830,6 +830,7 @@ def test_semaphore_not_leaked_on_retry(tmp_path: Path):
     on every retry.
     """
     semaphore = asyncio.Semaphore(2)
+    head_semaphore = asyncio.Semaphore(50)
     mock_client = _make_fake_client(file_content=b"hello", fail_head_n_times=1)
 
     async def run():
@@ -842,6 +843,7 @@ def test_semaphore_not_leaked_on_retry(tmp_path: Path):
             max_retries=3,
             retry_backoff=0.0,
             semaphore=semaphore,
+            head_semaphore=head_semaphore,
             query_str="test query",
         )
 

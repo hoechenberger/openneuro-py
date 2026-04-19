@@ -313,6 +313,7 @@ async def _download_file(
     max_retries: int,
     retry_backoff: float,
     semaphore: asyncio.Semaphore,
+    head_semaphore: asyncio.Semaphore,
     query_str: str,
 ) -> None:
     """Download an individual file, retrying on transient errors."""
@@ -325,6 +326,7 @@ async def _download_file(
                 verify_hash=verify_hash,
                 verify_size=verify_size,
                 semaphore=semaphore,
+                head_semaphore=head_semaphore,
                 query_str=query_str,
             )
             return
@@ -359,6 +361,7 @@ async def _attempt_download(
     verify_hash: bool,
     verify_size: bool,
     semaphore: asyncio.Semaphore,
+    head_semaphore: asyncio.Semaphore,
     query_str: str,
 ) -> None:
     """Single download attempt (HEAD → local check → GET)."""
@@ -385,12 +388,13 @@ async def _attempt_download(
         # Phase 1: HEAD request to get remote file hash and size.
         # The file sizes provided via the API often do not match the sizes
         # reported by the HTTP server. Rely on the HTTP server sizes.
-        # HEAD requests are not gated by the semaphore — they return tiny
-        # responses and should not compete with actual file downloads for
-        # concurrency slots.
+        # HEAD requests use a separate semaphore with a higher limit than
+        # file downloads — they return tiny responses and should not compete
+        # with actual file downloads for concurrency slots.
         try:
-            response = await client.head(url, headers=user_agent_header)
-            headers = response.headers
+            async with head_semaphore:
+                response = await client.head(url, headers=user_agent_header)
+                headers = response.headers
         except allowed_retry_exceptions as exc:
             raise _RetryableError from exc
 
@@ -599,6 +603,9 @@ async def _download_files(
     # Semaphore (counter) to limit maximum number of concurrent download
     # coroutines.
     semaphore = asyncio.Semaphore(max_concurrent_downloads)
+    # HEAD requests use a separate, higher-limit semaphore so they complete
+    # quickly without blocking file downloads.
+    head_semaphore = asyncio.Semaphore(50)
     download_tasks = []
     normalized_query_str = " ".join(shlex.split(query_str, posix=False))
 
@@ -623,6 +630,7 @@ async def _download_files(
             max_retries=max_retries,
             retry_backoff=retry_backoff,
             semaphore=semaphore,
+            head_semaphore=head_semaphore,
             query_str=normalized_query_str,
         )
         download_tasks.append(download_task)
