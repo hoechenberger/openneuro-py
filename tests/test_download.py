@@ -830,7 +830,7 @@ def test_semaphore_not_leaked_on_retry(tmp_path: Path):
     on every retry.
     """
     semaphore = asyncio.Semaphore(2)
-    head_semaphore = asyncio.Semaphore(50)
+    head_semaphore = asyncio.Semaphore(_download._MAX_CONCURRENT_HEAD_REQUESTS)
     mock_client = _make_fake_client(file_content=b"hello", fail_head_n_times=1)
 
     async def run():
@@ -853,6 +853,8 @@ def test_semaphore_not_leaked_on_retry(tmp_path: Path):
     assert semaphore._value == 2, (
         f"Semaphore leaked: expected value 2, got {semaphore._value}"
     )
-    assert head_semaphore._value == 50, (
-        f"HEAD semaphore leaked: expected value 50, got {head_semaphore._value}"
+    assert head_semaphore._value == _download._MAX_CONCURRENT_HEAD_REQUESTS, (
+        f"HEAD semaphore leaked: expected value "
+        f"{_download._MAX_CONCURRENT_HEAD_REQUESTS}, "
+        f"got {head_semaphore._value}"
     )
