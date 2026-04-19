@@ -772,6 +772,8 @@ def _make_fake_client(*, file_content: bytes, fail_head_n_times: int = 0):
         if head_call_count <= fail_head_n_times:
             raise httpx.ReadTimeout("simulated timeout")
         resp = MagicMock()
+        resp.status_code = 200
+        resp.is_error = False
         resp.headers = {
             "etag": '"d41d8cd98f00b204e9800998ecf8427e"',
             "content-length": str(len(file_content)),
