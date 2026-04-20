@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from tqdm.auto import tqdm
 
 import openneuro
 import openneuro._config
@@ -787,7 +788,6 @@ def _make_fake_client(
         resp.is_error = False
         resp.headers = {
             "etag": '"d41d8cd98f00b204e9800998ecf8427e"',
-            "content-length": str(len(file_content)),
         }
         return resp
 
@@ -848,19 +848,21 @@ def _run_download_file(
         head_semaphore = asyncio.Semaphore(_download._MAX_CONCURRENT_HEAD_REQUESTS)
 
     async def run():
-        await _download_file(
-            url="https://example.com/test.txt",
-            api_file_size=5,
-            outfile=tmp_path / "test.txt",
-            remote_path="test.txt",
-            verify_hash=False,
-            verify_size=False,
-            max_retries=3,
-            retry_backoff=0.0,
-            semaphore=semaphore,
-            head_semaphore=head_semaphore,
-            query_str="test query",
-        )
+        with tqdm(total=5, disable=True) as overall_progress:
+            await _download_file(
+                url="https://example.com/test.txt",
+                remote_file_size=5,
+                outfile=tmp_path / "test.txt",
+                remote_path="test.txt",
+                verify_hash=False,
+                verify_size=False,
+                max_retries=3,
+                retry_backoff=0.0,
+                semaphore=semaphore,
+                head_semaphore=head_semaphore,
+                query_str="test query",
+                overall_progress=overall_progress,
+            )
 
     with patch("openneuro._download.httpx.AsyncClient", return_value=mock_client):
         asyncio.run(run())
@@ -939,20 +941,22 @@ def test_retrieve_and_write_to_disk_none_size(tmp_path: Path):
     outfile = tmp_path / "test.txt"
     content = b"hello world"
 
-    asyncio.run(
-        _retrieve_and_write_to_disk(
-            response=_mock_response(content),
-            outfile=outfile,
-            remote_path="test.txt",
-            mode="wb",
-            desc="test",
-            local_file_size=0,
-            remote_file_size=None,
-            remote_file_hash=None,
-            verify_hash=False,
-            verify_size=True,
+    with tqdm(total=0, disable=True) as overall_progress:
+        asyncio.run(
+            _retrieve_and_write_to_disk(
+                response=_mock_response(content),
+                outfile=outfile,
+                remote_path="test.txt",
+                mode="wb",
+                desc="test",
+                local_file_size=0,
+                remote_file_size=None,
+                remote_file_hash=None,
+                verify_hash=False,
+                verify_size=True,
+                overall_progress=overall_progress,
+            )
         )
-    )
     assert outfile.read_bytes() == content
 
 
@@ -960,18 +964,20 @@ def test_size_mismatch_uses_remote_path(tmp_path: Path):
     """Error message must contain remote_path, not the local outfile path."""
     remote_path = "sub-01/meg/file.fif"
     with pytest.raises(RuntimeError, match=remote_path) as exc_info:
-        asyncio.run(
-            _retrieve_and_write_to_disk(
-                response=_mock_response(b"hello"),
-                outfile=tmp_path / "test.txt",
-                remote_path=remote_path,
-                mode="wb",
-                desc="test",
-                local_file_size=0,
-                remote_file_size=999_999,  # intentional mismatch
-                remote_file_hash=None,
-                verify_hash=False,
-                verify_size=True,
+        with tqdm(total=0, disable=True) as overall_progress:
+            asyncio.run(
+                _retrieve_and_write_to_disk(
+                    response=_mock_response(b"hello"),
+                    outfile=tmp_path / "test.txt",
+                    remote_path=remote_path,
+                    mode="wb",
+                    desc="test",
+                    local_file_size=0,
+                    remote_file_size=999_999,  # intentional mismatch
+                    remote_file_hash=None,
+                    verify_hash=False,
+                    verify_size=True,
+                    overall_progress=overall_progress,
+                )
             )
-        )
     assert str(tmp_path) not in str(exc_info.value)

@@ -15,6 +15,7 @@ download
 """
 
 import asyncio
+import dataclasses
 import hashlib
 import io
 import json
@@ -83,6 +84,16 @@ allowed_retry_codes = (408, 500, 502, 503, 504, 522, 524)
 
 class _RetryableError(Exception):
     """Raised inside _attempt_download to signal the caller should retry."""
+
+
+@dataclasses.dataclass(frozen=True)
+class _FileInfo:
+    """Per-file metadata collected in ``_download_files`` before task creation."""
+
+    url: str
+    size: int | None
+    outfile: Path
+    remote_path: str
 
 
 allowed_retry_exceptions = (
@@ -334,7 +345,7 @@ def _retry_request(
 async def _download_file(
     *,
     url: str,
-    api_file_size: int | None,
+    remote_file_size: int | None,
     outfile: Path,
     remote_path: str,
     verify_hash: bool,
@@ -344,13 +355,14 @@ async def _download_file(
     semaphore: asyncio.Semaphore,
     head_semaphore: asyncio.Semaphore,
     query_str: str,
+    overall_progress: tqdm,
 ) -> None:
     """Download an individual file, retrying on transient errors."""
     for attempt in range(max_retries + 1):
         try:
             await _attempt_download(
                 url=url,
-                api_file_size=api_file_size,
+                remote_file_size=remote_file_size,
                 outfile=outfile,
                 remote_path=remote_path,
                 verify_hash=verify_hash,
@@ -358,6 +370,8 @@ async def _download_file(
                 semaphore=semaphore,
                 head_semaphore=head_semaphore,
                 query_str=query_str,
+                overall_progress=overall_progress,
+                is_retry=attempt > 0,
             )
             return
         except _RetryableError as err:
@@ -389,7 +403,7 @@ async def _download_file(
 async def _attempt_download(
     *,
     url: str,
-    api_file_size: int | None,
+    remote_file_size: int | None,
     outfile: Path,
     remote_path: str,
     verify_hash: bool,
@@ -397,6 +411,8 @@ async def _attempt_download(
     semaphore: asyncio.Semaphore,
     head_semaphore: asyncio.Semaphore,
     query_str: str,
+    overall_progress: tqdm,
+    is_retry: bool,
 ) -> None:
     """Single download attempt (HEAD → local check → GET)."""
     if outfile.exists():
@@ -419,9 +435,7 @@ async def _attempt_download(
         timeout = 5
 
     async with httpx.AsyncClient(timeout=timeout, verify=ssl_context) as client:
-        # Phase 1: HEAD request to get remote file hash and size.
-        # The file sizes provided via the API often do not match the sizes
-        # reported by the HTTP server. Rely on the HTTP server sizes.
+        # Phase 1: HEAD request to get remote file hash.
         try:
             async with head_semaphore:
                 response = await client.head(url, headers=user_agent_header)
@@ -448,22 +462,6 @@ async def _attempt_download(
         remote_file_hash = (
             etag_hash if (etag_hash is not None and len(etag_hash) == 32) else None
         )
-
-        # The server doesn't always set a Content-Length header.
-        content_length = response.headers.get("content-length")
-        remote_file_size = (
-            api_file_size if content_length is None else int(content_length)
-        )
-
-        if api_file_size is not None and remote_file_size != api_file_size:
-            tqdm.write(
-                _unicode(
-                    f"Warning: size mismatch for {outfile.name}: "
-                    f"API size {api_file_size} bytes, "
-                    f"server size {remote_file_size} bytes.",
-                    emoji="⚠️",
-                )
-            )
 
         # Phase 2: Local file check (no semaphore held — allows other tasks
         # to use network slots while we do local I/O).
@@ -496,7 +494,8 @@ async def _attempt_download(
                 local_file_size = 0
             else:
                 # Download complete, skip.
-                tqdm.write(f"Skipping {outfile.name}: already downloaded.")
+                if not is_retry:
+                    overall_progress.update(remote_file_size or 0)
                 return
         elif (
             outfile.exists()
@@ -507,6 +506,8 @@ async def _attempt_download(
             desc = f"Resuming {outfile.name}"
             request_headers["Range"] = f"bytes={local_file_size}-"
             mode = "ab"
+            if not is_retry:
+                overall_progress.update(local_file_size)
         elif (
             outfile.exists()
             and remote_file_size is not None
@@ -557,6 +558,7 @@ async def _attempt_download(
                         remote_file_hash=remote_file_hash,
                         verify_hash=verify_hash,
                         verify_size=verify_size,
+                        overall_progress=overall_progress,
                     )
         except allowed_retry_exceptions as exc:
             raise _RetryableError from exc
@@ -574,6 +576,7 @@ async def _retrieve_and_write_to_disk(
     remote_file_hash: str | None,
     verify_hash: bool,
     verify_size: bool,
+    overall_progress: tqdm,
 ) -> None:
     hash = hashlib.md5()
 
@@ -601,7 +604,9 @@ async def _retrieve_and_write_to_disk(
             num_bytes_downloaded = response.num_bytes_downloaded
             async for chunk in response.aiter_bytes():
                 await f.write(chunk)
-                progress.update(response.num_bytes_downloaded - num_bytes_downloaded)
+                chunk_bytes = response.num_bytes_downloaded - num_bytes_downloaded
+                progress.update(chunk_bytes)
+                overall_progress.update(chunk_bytes)
                 num_bytes_downloaded = response.num_bytes_downloaded
                 if verify_hash:
                     hash.update(chunk)
@@ -661,12 +666,13 @@ async def _download_files(
     # HEAD requests use a separate, higher-limit semaphore so they complete
     # quickly without blocking file downloads.
     head_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_HEAD_REQUESTS)
-    download_tasks = []
     normalized_query_str = " ".join(shlex.split(query_str, posix=False))
 
+    # Collect file metadata before creating tasks so the overall progress
+    # bar can be created first and passed to each coroutine.
+    file_infos: list[_FileInfo] = []
     for file in files:
         filename = Path(file.filename)
-        api_file_size = file.size
         if not file.urls:
             raise RuntimeError(
                 f"No download URLs for {filename}. The file may have been "
@@ -676,22 +682,44 @@ async def _download_files(
 
         outfile = target_dir / filename
         outfile.parent.mkdir(parents=True, exist_ok=True)
-        download_task = _download_file(
-            url=url,
-            api_file_size=api_file_size,
-            outfile=outfile,
-            remote_path=file.filename,
-            verify_hash=verify_hash,
-            verify_size=verify_size,
-            max_retries=max_retries,
-            retry_backoff=retry_backoff,
-            semaphore=semaphore,
-            head_semaphore=head_semaphore,
-            query_str=normalized_query_str,
+        file_infos.append(
+            _FileInfo(
+                url=url,
+                size=file.size,
+                outfile=outfile,
+                remote_path=file.filename,
+            )
         )
-        download_tasks.append(download_task)
 
-    await asyncio.gather(*download_tasks)
+    total_bytes = sum(fi.size or 0 for fi in file_infos)
+    with tqdm(
+        total=total_bytes,
+        desc="Overall",
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        miniters=1,
+        leave=True,
+    ) as overall_progress:
+        download_tasks = [
+            _download_file(
+                url=fi.url,
+                remote_file_size=fi.size,
+                outfile=fi.outfile,
+                remote_path=fi.remote_path,
+                verify_hash=verify_hash,
+                verify_size=verify_size,
+                max_retries=max_retries,
+                retry_backoff=retry_backoff,
+                semaphore=semaphore,
+                head_semaphore=head_semaphore,
+                query_str=normalized_query_str,
+                overall_progress=overall_progress,
+            )
+            for fi in file_infos
+        ]
+        del file_infos
+        await asyncio.gather(*download_tasks)
 
 
 def _get_local_tag(*, dataset_id: str, dataset_dir: Path) -> str | None:
@@ -922,6 +950,7 @@ def download(
         f"({max_concurrent_downloads} concurrent downloads)."
     )
     tqdm.write(_unicode(msg, emoji="📥", end=""))
+    tqdm.write("")  # Blank line before progress bars
 
     query_str = snapshot_query_template.safe_substitute(
         tag=tag or "null",
