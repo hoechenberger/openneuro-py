@@ -31,10 +31,12 @@ from typing import Any, Literal
 
 import aiofiles
 import httpx
+from pydantic import ValidationError
 from tqdm.auto import tqdm
 
 from openneuro import __version__, _glob
 from openneuro._config import get_token, init_config
+from openneuro._models import DatasetFile, Snapshot
 
 # Use system trust store for SSL certificates, which is important for users in
 # enterprise environments with custom CAs.
@@ -202,8 +204,8 @@ def _check_snapshot_exists(
         retry_backoff=retry_backoff,
     )
 
-    snapshots = response_json["data"]["dataset"]["snapshots"]
-    tags = [s["id"].replace(f"{dataset_id}:", "") for s in snapshots]
+    raw_snapshots = response_json["data"]["dataset"]["snapshots"]
+    tags = [s["id"].replace(f"{dataset_id}:", "") for s in raw_snapshots]
 
     if tag not in tags:
         raise RuntimeError(
@@ -220,7 +222,7 @@ def _get_download_metadata(
     max_retries: int,
     retry_backoff: float = 0.5,
     metadata_timeout: float = 15.0,
-) -> dict[str, Any]:
+) -> Snapshot:
     """Retrieve dataset metadata required for the download."""
     if tag is None:
         query = dataset_query_template.substitute(dataset_id=dataset_id)
@@ -241,11 +243,21 @@ def _get_download_metadata(
         retry_backoff=retry_backoff,
     )
     if tag is None:
-        out = response_json["data"]["dataset"]["latestSnapshot"]
+        raw = response_json["data"]["dataset"]["latestSnapshot"]
     else:
-        out = response_json["data"]["snapshot"]
-    assert isinstance(out, dict)
-    return out
+        raw = response_json["data"]["snapshot"]
+    try:
+        return Snapshot.model_validate(raw)
+    except ValidationError as e:
+        sanitized_details = json.dumps(
+            e.errors(include_input=False), indent=2, default=str
+        )
+        raise RuntimeError(
+            "The OpenNeuro API returned an unexpected response. "
+            "Please open an issue at "
+            "https://github.com/openneuro-py/openneuro-py/issues\n\n"
+            f"Validation details: {sanitized_details}"
+        ) from e
 
 
 def _retry_request(
@@ -257,11 +269,11 @@ def _retry_request(
         # Sometimes we do get a response, but it contains a gateway timeout error
         # message (504 or 502 status code)
         if response_json is not None and "errors" in response_json:
-            message = response_json["errors"][0]["message"]
+            error_message = response_json["errors"][0]["message"]
             if (
-                message.startswith(("504", "502", "connect ECONNREFUSED"))
-                or message.endswith("due to timeout")
-                or message == "fetch failed"
+                error_message.startswith(("504", "502", "connect ECONNREFUSED"))
+                or error_message.endswith("due to timeout")
+                or error_message == "fetch failed"
             ):
                 request_timed_out = True
         if not request_timed_out:
@@ -281,8 +293,8 @@ def _retry_request(
         raise RuntimeError(f"Error when {what}.")
     assert isinstance(response_json, dict)
     if "errors" in response_json:
-        msg = response_json["errors"][0]["message"]
-        if msg == "You do not have access to read this dataset.":
+        error_message = response_json["errors"][0]["message"]
+        if error_message == "You do not have access to read this dataset.":
             try:
                 # Do we have an API token?
                 get_token()
@@ -301,14 +313,14 @@ def _retry_request(
                     f"not log you in. {e}"
                 )
         else:
-            raise RuntimeError(f'Query failed when {what}: "{msg}"')
+            raise RuntimeError(f'Query failed when {what}: "{error_message}"')
     return response_json
 
 
 async def _download_file(
     *,
     url: str,
-    api_file_size: int,
+    api_file_size: int | None,
     outfile: Path,
     verify_hash: bool,
     verify_size: bool,
@@ -358,7 +370,7 @@ async def _download_file(
 async def _attempt_download(
     *,
     url: str,
-    api_file_size: int,
+    api_file_size: int | None,
     outfile: Path,
     verify_hash: bool,
     verify_size: bool,
@@ -405,22 +417,19 @@ async def _attempt_download(
             raise _RetryableError from exc
 
         # Try to get the S3 MD5 hash for the file.
-        try:
-            etag_hash = headers["etag"].strip('"')
-            if len(etag_hash) == 32:
-                remote_file_hash = etag_hash
-            else:  # It's not an MD5 hash.
-                remote_file_hash = None
-        except KeyError:
-            remote_file_hash = None
+        etag = headers.get("etag")
+        etag_hash = etag.strip('"') if etag is not None else None
+        remote_file_hash = (
+            etag_hash if (etag_hash is not None and len(etag_hash) == 32) else None
+        )
 
-        # Get the Content-Length.
-        try:
-            remote_file_size = int(response.headers["content-length"])
-        except KeyError:
-            # The server doesn't always set a Content-Length header.
-            remote_file_size = api_file_size
-        if remote_file_size != api_file_size:
+        # The server doesn't always set a Content-Length header.
+        content_length = response.headers.get("content-length")
+        remote_file_size = (
+            api_file_size if content_length is None else int(content_length)
+        )
+
+        if api_file_size is not None and remote_file_size != api_file_size:
             tqdm.write(
                 _unicode(
                     f"Warning: size mismatch for {outfile.name}: "
@@ -436,7 +445,11 @@ async def _attempt_download(
         request_headers["Accept-Encoding"] = ""  # Disable compression
 
         mode: Literal["ab", "wb"] = "wb"
-        if outfile.exists() and local_file_size == remote_file_size:
+        if (
+            outfile.exists()
+            and remote_file_size is not None
+            and local_file_size == remote_file_size
+        ):
             hash_ = hashlib.md5()
 
             if verify_hash and remote_file_hash is not None:
@@ -459,14 +472,27 @@ async def _attempt_download(
                 # Download complete, skip.
                 tqdm.write(f"Skipping {outfile.name}: already downloaded.")
                 return
-        elif outfile.exists() and local_file_size < remote_file_size:
+        elif (
+            outfile.exists()
+            and remote_file_size is not None
+            and local_file_size < remote_file_size
+        ):
             # Download incomplete, resume.
             desc = f"Resuming {outfile.name}"
             request_headers["Range"] = f"bytes={local_file_size}-"
             mode = "ab"
-        elif outfile.exists():
+        elif (
+            outfile.exists()
+            and remote_file_size is not None
+            and local_file_size > remote_file_size
+        ):
             # Local file is larger than remote – overwrite.
             desc = f"Re-downloading {outfile.name}: file size mismatch."
+            outfile.unlink()
+            local_file_size = 0
+        elif outfile.exists():
+            # Remote size unknown – re-download to be safe.
+            desc = f"Re-downloading {outfile.name}: remote file size unknown."
             outfile.unlink()
             local_file_size = 0
         else:
@@ -521,7 +547,7 @@ async def _retrieve_and_write_to_disk(
     mode: Literal["ab", "wb"],
     desc: str,
     local_file_size: int,
-    remote_file_size: int,
+    remote_file_size: int | None,
     remote_file_hash: str | None,
     verify_hash: bool,
     verify_size: bool,
@@ -569,7 +595,7 @@ async def _retrieve_and_write_to_disk(
         if verify_size:
             await f.flush()
             local_file_size = outfile.stat().st_size
-            if local_file_size != remote_file_size:
+            if remote_file_size is not None and local_file_size != remote_file_size:
                 raise RuntimeError(
                     f"Server claimed size of {outfile} would be "
                     f"{remote_file_size} bytes, but downloaded "
@@ -597,7 +623,7 @@ async def _retrieve_and_write_to_disk(
 async def _download_files(
     *,
     target_dir: Path,
-    files: Iterable[dict[str, Any]],
+    files: Iterable[DatasetFile],
     verify_hash: bool,
     verify_size: bool,
     max_retries: int,
@@ -616,14 +642,14 @@ async def _download_files(
     normalized_query_str = " ".join(shlex.split(query_str, posix=False))
 
     for file in files:
-        filename = Path(file["filename"])
-        api_file_size = file["size"]
-        if not file.get("urls"):
+        filename = Path(file.filename)
+        api_file_size = file.size
+        if not file.urls:
             raise RuntimeError(
                 f"No download URLs for {filename}. The file may have been "
                 "removed from the dataset."
             )
-        url = file["urls"][0]
+        url = file.urls[0]
 
         outfile = target_dir / filename
         outfile.parent.mkdir(parents=True, exist_ok=True)
@@ -798,7 +824,7 @@ def download(
         metadata_timeout=metadata_timeout,
     )
     del tag
-    tag = metadata["id"].replace(f"{dataset}:", "")
+    tag = metadata.id.replace(f"{dataset}:", "")
     if target_dir.exists():
         # Once we find the first child, we know the directory is not empty, so we can
         # stop iterating immediately.
@@ -830,9 +856,9 @@ def download(
         "CHANGES",
     }
 
-    all_files = metadata["files"]
+    all_files = metadata.files
     del metadata
-    filenames = [f["filename"] for f in all_files]
+    filenames = [f.filename for f in all_files]
 
     if include:
         included = _glob.glob_filter(filenames, include)
@@ -847,7 +873,7 @@ def download(
         excluded_set = set()
 
     keep = (included_set - excluded_set) | (essential_files & set(filenames))
-    files: list[dict[str, Any]] = [f for f in all_files if f["filename"] in keep]
+    files: list[DatasetFile] = [f for f in all_files if f.filename in keep]
 
     if include:
         for pattern, matches in included.items():

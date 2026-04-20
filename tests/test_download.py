@@ -17,8 +17,10 @@ import openneuro._config
 from openneuro import _download
 from openneuro._download import (
     _download_file,
+    _retrieve_and_write_to_disk,
     download,
 )
+from openneuro._models import Snapshot
 from tests.utils import load_json
 
 dataset_id_aws = "ds000246"
@@ -361,6 +363,7 @@ def test_download_file_list_generation(
     4. Ensure all expected files match the include patterns
     5. Validate JSON syntax and file paths are correct
     """
+    MOCK_METADATA = Snapshot.model_validate(load_json(f"mock_metadata_{dataset}.json"))
 
     def mock_get_download_metadata(*args, **kwargs):
         return copy.deepcopy(MOCK_METADATA)
@@ -371,9 +374,6 @@ def test_download_file_list_generation(
     async def _download_files_spy(*, files, **kwargs):
         """Spy on _download_files to capture the call arguments."""
         return None
-
-    # Load mock metadata
-    MOCK_METADATA = load_json(f"mock_metadata_{dataset}.json")
 
     with (
         patch.object(
@@ -394,7 +394,7 @@ def test_download_file_list_generation(
         )
 
         files_arg = _download_files_spy.call_args[1]["files"]
-        files_arg = [file["filename"] for file in files_arg]
+        files_arg = [file.filename for file in files_arg]
         assert len(files_arg) == len(expected_files), (
             f"Expected {len(expected_files)} files, got {len(files_arg)}"
         )
@@ -436,6 +436,7 @@ def test_download_file_count(
     5. Ensure JSON syntax is valid and numbers are integers
 
     """
+    MOCK_METADATA = Snapshot.model_validate(load_json(f"mock_metadata_{dataset}.json"))
 
     def mock_get_download_metadata(*args, **kwargs):
         return copy.deepcopy(MOCK_METADATA)
@@ -446,9 +447,6 @@ def test_download_file_count(
     async def _download_files_spy(*, files, **kwargs):
         """Spy on _download_files to capture the call arguments."""
         return None
-
-    # Load mock metadata
-    MOCK_METADATA = load_json(f"mock_metadata_{dataset}.json")
 
     with (
         patch.object(
@@ -470,7 +468,7 @@ def test_download_file_count(
         )
 
         files_arg = _download_files_spy.call_args[1]["files"]
-        files_arg = [file["filename"] for file in files_arg]
+        files_arg = [file.filename for file in files_arg]
         assert len(files_arg) == expected_num_files, (
             f"Expected {expected_num_files} files, got {len(files_arg)}"
         )
@@ -919,3 +917,34 @@ def test_head_non_retryable_status_code(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="HEAD request failed with HTTP 404"):
         _run_download_file(tmp_path, mock_client)
+
+
+# -- _retrieve_and_write_to_disk with remote_file_size=None --
+
+
+def test_retrieve_and_write_to_disk_none_size(tmp_path: Path):
+    """verify_size=True with remote_file_size=None must not crash."""
+    outfile = tmp_path / "test.txt"
+    content = b"hello world"
+    response = AsyncMock()
+    response.num_bytes_downloaded = len(content)
+
+    async def aiter_bytes():
+        yield content
+
+    response.aiter_bytes = aiter_bytes
+
+    asyncio.run(
+        _retrieve_and_write_to_disk(
+            response=response,
+            outfile=outfile,
+            mode="wb",
+            desc="test",
+            local_file_size=0,
+            remote_file_size=None,
+            remote_file_hash=None,
+            verify_hash=False,
+            verify_size=True,
+        )
+    )
+    assert outfile.read_bytes() == content
