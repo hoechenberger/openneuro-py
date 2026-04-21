@@ -735,6 +735,8 @@ async def _download_files(
     for remote_path, result in zip(remote_paths, results):
         if isinstance(result, _DownloadError):
             failures.append((remote_path, result))
+        elif isinstance(result, asyncio.CancelledError):
+            raise result
         elif isinstance(result, BaseException):
             # Unexpected exception — wrap it so it ends up in the summary too.
             failures.append(
