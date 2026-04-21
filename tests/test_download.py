@@ -934,7 +934,7 @@ def test_head_retryable_status_code(tmp_path: Path):
 
 
 def test_head_non_retryable_status_code(tmp_path: Path):
-    """A non-retryable HEAD status code (e.g. 404) should raise RuntimeError."""
+    """A non-retryable HEAD status code (e.g. 404) should raise _DownloadError."""
     mock_client = _make_fake_client(
         file_content=b"hello",
         fail_head_n_times=99,
