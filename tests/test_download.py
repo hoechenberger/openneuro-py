@@ -18,6 +18,7 @@ import openneuro._config
 from openneuro import _download
 from openneuro._download import (
     _download_file,
+    _DownloadError,
     _retrieve_and_write_to_disk,
     download,
 )
@@ -475,6 +476,29 @@ def test_download_file_count(
         )
 
 
+def test_partial_download_failure(tmp_path: Path) -> None:
+    """A single file failure must not abort other downloads."""
+    metadata = Snapshot.model_validate(load_json("mock_metadata_ds000117.json"))
+    fail_filename = "participants.tsv"
+    attempted: list[str] = []
+
+    async def patched_download_file(*, remote_path: str, **kwargs):
+        attempted.append(remote_path)
+        if remote_path == fail_filename:
+            raise _DownloadError(reason="Size mismatch.", hint="")
+
+    with (
+        patch.object(_download, "_get_download_metadata", return_value=metadata),
+        patch.object(_download, "_get_local_tag", return_value=None),
+        patch.object(_download, "_download_file", side_effect=patched_download_file),
+    ):
+        with pytest.raises(RuntimeError, match="Failed to download 1 file"):
+            download(dataset="ds000117", tag="1.1.0", target_dir=tmp_path)
+
+    assert fail_filename in attempted
+    assert len(attempted) > 1
+
+
 # -- Glob matching tests --
 
 
@@ -918,7 +942,12 @@ def test_head_non_retryable_status_code(tmp_path: Path):
         fail_head_status_code=404,
     )
 
-    with pytest.raises(RuntimeError, match="HEAD request failed with HTTP 404"):
+    # Access via _download.* rather than a top-level import: the SSL tests above
+    # call importlib.reload(_download), which recreates all class objects. A
+    # top-level import would hold a stale reference and isinstance() would fail.
+    with pytest.raises(
+        _download._DownloadError, match="HEAD request failed with HTTP 404"
+    ):
         _run_download_file(tmp_path, mock_client)
 
 
@@ -963,7 +992,8 @@ def test_retrieve_and_write_to_disk_none_size(tmp_path: Path):
 def test_size_mismatch_uses_remote_path(tmp_path: Path):
     """Error message must contain remote_path, not the local outfile path."""
     remote_path = "sub-01/meg/file.fif"
-    with pytest.raises(RuntimeError, match=remote_path) as exc_info:
+    # Access via _download.* — see comment in test_head_non_retryable_status_code.
+    with pytest.raises(_download._RetryableError, match=remote_path) as exc_info:
         with tqdm(total=0, disable=True) as overall_progress:
             asyncio.run(
                 _retrieve_and_write_to_disk(

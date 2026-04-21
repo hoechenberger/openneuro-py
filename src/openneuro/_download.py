@@ -86,6 +86,19 @@ class _RetryableError(Exception):
     """Raised inside _attempt_download to signal the caller should retry."""
 
 
+class _DownloadError(Exception):
+    """Terminal per-file download failure.
+
+    Carries a short human reason and a debug hint that is identical for all
+    files in the same dataset.
+    """
+
+    def __init__(self, reason: str, hint: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.hint = hint
+
+
 @dataclasses.dataclass(frozen=True)
 class _FileInfo:
     """Per-file metadata collected in ``_download_files`` before task creation."""
@@ -378,6 +391,8 @@ async def _download_file(
             if attempt < max_retries:
                 if isinstance(err.__cause__, httpx.TimeoutException):
                     reason = "Request timed out"
+                elif isinstance(err.__cause__, httpx.ConnectError):
+                    reason = "Could not connect (DNS or network error)"
                 elif err.__cause__ is not None:
                     reason = str(err.__cause__) or "Error"
                 else:
@@ -391,12 +406,13 @@ async def _download_file(
                 await asyncio.sleep(retry_backoff)
                 retry_backoff *= 2
             else:
+                short_reason = str(err) or "Unknown error"
                 hint = _download_debug_hint(
                     remote_path=remote_path, url=url, query_str=query_str
                 )
-                raise RuntimeError(
-                    f"Failed to download {remote_path} from {url} "
-                    f"after {max_retries} retries. {hint}"
+                raise _DownloadError(
+                    reason=f"{short_reason} (failed after {max_retries} retries)",
+                    hint=hint,
                 ) from (err.__cause__ or err)
 
 
@@ -442,15 +458,9 @@ async def _attempt_download(
                 if response.status_code in allowed_retry_codes:
                     raise _RetryableError(f"HTTP {response.status_code}")
                 if response.is_error:
-                    hint = _download_debug_hint(
-                        remote_path=remote_path,
-                        url=url,
-                        query_str=query_str,
-                    )
-                    raise RuntimeError(
+                    raise _RetryableError(
                         f"HEAD request failed with HTTP "
-                        f"{response.status_code} for "
-                        f"{remote_path} (url: {url}). {hint}"
+                        f"{response.status_code} for {remote_path}"
                     )
                 headers = response.headers
         except allowed_retry_exceptions as exc:
@@ -537,14 +547,9 @@ async def _attempt_download(
                     elif response.status_code in allowed_retry_codes:
                         raise _RetryableError(f"HTTP {response.status_code}")
                     else:
-                        hint = _download_debug_hint(
-                            remote_path=remote_path,
-                            url=url,
-                            query_str=query_str,
-                        )
-                        raise RuntimeError(
-                            f"Error {response.status_code} when trying to "
-                            f"download {remote_path}. {hint}"
+                        raise _RetryableError(
+                            f"HTTP {response.status_code} when trying to "
+                            f"download {remote_path}"
                         )
 
                     await _retrieve_and_write_to_disk(
@@ -614,9 +619,9 @@ async def _retrieve_and_write_to_disk(
         if verify_hash and remote_file_hash is not None:
             got = hash.hexdigest()
             if got != remote_file_hash:
-                raise RuntimeError(
-                    f"Hash mismatch for:\n{remote_path}\n"
-                    f"Expected:\n{remote_file_hash}\nGot:\n{got}"
+                raise _RetryableError(
+                    f"Hash mismatch for {remote_path}: "
+                    f"expected {remote_file_hash}, got {got}"
                 )
 
         # Check the file was completely downloaded.
@@ -624,7 +629,7 @@ async def _retrieve_and_write_to_disk(
             await f.flush()
             local_file_size = outfile.stat().st_size
             if remote_file_size is not None and local_file_size != remote_file_size:
-                raise RuntimeError(
+                raise _RetryableError(
                     f"Size mismatch for {remote_path}: expected "
                     f"{remote_file_size} bytes, but downloaded "
                     f"{local_file_size} bytes."
@@ -642,9 +647,8 @@ async def _retrieve_and_write_to_disk(
             pass
         else:
             if isinstance(data, dict) and list(data) == ["error"]:
-                raise RuntimeError(
-                    f"Error downloading:\n{remote_path}:\n"
-                    f"Got JSON error response contents:\n{data}"
+                raise _RetryableError(
+                    f"Error downloading {remote_path}: got JSON error response: {data}"
                 )
 
 
@@ -658,8 +662,8 @@ async def _download_files(
     retry_backoff: float,
     max_concurrent_downloads: int,
     query_str: str,
-) -> None:
-    """Download files, one by one."""
+) -> list[tuple[str, _DownloadError]]:
+    """Download files concurrently, returning a list of per-file failures."""
     # Semaphore (counter) to limit maximum number of concurrent download
     # coroutines.
     semaphore = asyncio.Semaphore(max_concurrent_downloads)
@@ -671,13 +675,21 @@ async def _download_files(
     # Collect file metadata before creating tasks so the overall progress
     # bar can be created first and passed to each coroutine.
     file_infos: list[_FileInfo] = []
+    pre_failures: list[tuple[str, _DownloadError]] = []
     for file in files:
         filename = Path(file.filename)
         if not file.urls:
-            raise RuntimeError(
-                f"No download URLs for {filename}. The file may have been "
-                "removed from the dataset."
+            pre_failures.append(
+                (
+                    file.filename,
+                    _DownloadError(
+                        reason=f"No download URLs for {filename}. "
+                        "The file may have been removed from the dataset.",
+                        hint="",
+                    ),
+                )
             )
+            continue
         url = file.urls[0]
 
         outfile = target_dir / filename
@@ -718,8 +730,25 @@ async def _download_files(
             )
             for fi in file_infos
         ]
+        remote_paths = [fi.remote_path for fi in file_infos]
         del file_infos
-        await asyncio.gather(*download_tasks)
+        results = await asyncio.gather(*download_tasks, return_exceptions=True)
+
+    failures: list[tuple[str, _DownloadError]] = list(pre_failures)
+    for remote_path, result in zip(remote_paths, results):
+        if isinstance(result, _DownloadError):
+            failures.append((remote_path, result))
+        elif isinstance(result, BaseException):
+            # Unexpected exception — wrap it so it ends up in the summary too.
+            failures.append(
+                (
+                    remote_path,
+                    _DownloadError(
+                        reason=str(result) or type(result).__name__, hint=""
+                    ),
+                )
+            )
+    return failures
 
 
 def _get_local_tag(*, dataset_id: str, dataset_dir: Path) -> str | None:
@@ -769,6 +798,36 @@ def _unicode(msg: str, *, emoji: str = " ", end: str = "…") -> str:
     elif end == "…":
         msg = f"{msg} ..."
     return msg
+
+
+def _print_download_failures(failures: list[tuple[str, _DownloadError]]) -> None:
+    """Print a summary of per-file download failures and raise RuntimeError."""
+    n = len(failures)
+    noun = "file" if n == 1 else "files"
+    msg_fail = (
+        f"❌ Failed to download {n} {noun}"
+        if stdout_unicode
+        else f"Failed to download {n} {noun}"
+    )
+    arrow = "→" if stdout_unicode else "->"
+    lines = [f"\n{msg_fail}:\n"]
+    for remote_path, exc in failures:
+        lines.append(f"  {remote_path}")
+        lines.append(f"    {arrow} {exc.reason}")
+    # The debug hint is identical for all files in the same dataset — print once.
+    hint = next((exc.hint for _, exc in failures if exc.hint), None)
+    if hint:
+        lines.append("")
+        lines.append(hint)
+    lines.append("")
+    lines.append(
+        "Re-run this command to retry; already-downloaded files will be skipped."
+    )
+    tqdm.write("\n".join(lines))
+    raise RuntimeError(
+        f"Failed to download {n} {noun}. "
+        "Re-run this command to retry; already-downloaded files will be skipped."
+    )
 
 
 def download(
@@ -972,8 +1031,12 @@ def download(
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(coroutine)
+        failures: list[tuple[str, _DownloadError]] = []
     except RuntimeError:
-        asyncio.run(coroutine)
+        failures = asyncio.run(coroutine)
+
+    if failures:
+        _print_download_failures(failures)
 
     tqdm.write(_unicode(f"Finished downloading {dataset}.\n", emoji="✅", end=""))
     tqdm.write(_unicode("Please enjoy your brains.\n", emoji="🧠", end=""))
