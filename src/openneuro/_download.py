@@ -683,7 +683,7 @@ async def _download_files(
                 (
                     file.filename,
                     _DownloadError(
-                        reason=f"No download URLs for {filename}. "
+                        reason=f"No download URLs for {file.filename}. "
                         "The file may have been removed from the dataset.",
                         hint="",
                     ),
