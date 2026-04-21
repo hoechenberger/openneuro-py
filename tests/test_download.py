@@ -18,7 +18,6 @@ import openneuro._config
 from openneuro import _download
 from openneuro._download import (
     _download_file,
-    _DownloadError,
     _retrieve_and_write_to_disk,
     download,
 )
@@ -485,7 +484,7 @@ def test_partial_download_failure(tmp_path: Path) -> None:
     async def patched_download_file(*, remote_path: str, **kwargs):
         attempted.append(remote_path)
         if remote_path == fail_filename:
-            raise _DownloadError(reason="Size mismatch.", hint="")
+            raise _download._DownloadError(reason="Size mismatch.", hint="")
 
     with (
         patch.object(_download, "_get_download_metadata", return_value=metadata),
