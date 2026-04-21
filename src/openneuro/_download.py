@@ -89,14 +89,15 @@ class _RetryableError(Exception):
 class _DownloadError(Exception):
     """Terminal per-file download failure.
 
-    Carries a short human reason and a debug hint that is identical for all
-    files in the same dataset.
+    Carries a short human-readable reason, the direct download URL (may be
+    empty when no URL was available), and a dataset-level debug hint.
     """
 
-    def __init__(self, reason: str, hint: str) -> None:
+    def __init__(self, reason: str, hint: str, url: str = "") -> None:
         super().__init__(reason)
         self.reason = reason
         self.hint = hint
+        self.url = url
 
 
 @dataclasses.dataclass(frozen=True)
@@ -173,18 +174,15 @@ snapshot_query_template = string.Template(
 )
 
 
-def _download_debug_hint(*, remote_path: str, url: str, query_str: str) -> str:
-    """Return debugging guidance for download errors."""
-    return (
-        "If this is unexpected:\n\n"
-        f"1. Navigate to {gql_url}\n"
-        f"2. Enter and run the operation: `{query_str}`\n"
-        "3. In the Response, try to manually download "
-        f'the "urls" for "{remote_path}", which should '
-        f"contain {url}\n\n"
-        "If the download fails, open a GitHub issue like "
-        "https://github.com/OpenNeuroOrg/openneuro/issues/3145"
-    )
+_debug_hint_template = string.Template(
+    "If this is unexpected:\n\n"
+    f"1. Navigate to {gql_url}\n"
+    "2. Enter and run the operation: `$query_str`\n"
+    '3. In the Response, try to manually download the "urls" for the '
+    "failing files listed above.\n\n"
+    "If the download fails, open a GitHub issue like "
+    "https://github.com/OpenNeuroOrg/openneuro/issues/3145"
+)
 
 
 def _safe_query(
@@ -407,12 +405,11 @@ async def _download_file(
                 retry_backoff *= 2
             else:
                 short_reason = str(err) or "Unknown error"
-                hint = _download_debug_hint(
-                    remote_path=remote_path, url=url, query_str=query_str
-                )
+                hint = _debug_hint_template.substitute(query_str=query_str)
                 raise _DownloadError(
                     reason=f"{short_reason} (failed after {max_retries} retries)",
                     hint=hint,
+                    url=url,
                 ) from (err.__cause__ or err)
 
 
@@ -814,7 +811,9 @@ def _print_download_failures(failures: list[tuple[str, _DownloadError]]) -> None
     for remote_path, exc in failures:
         lines.append(f"  {remote_path}")
         lines.append(f"    {arrow} {exc.reason}")
-    # The debug hint is identical for all files in the same dataset — print once.
+        if exc.url:
+            lines.append(f"    {arrow} {exc.url}")
+    # The debug hint is dataset-level — print once.
     hint = next((exc.hint for _, exc in failures if exc.hint), None)
     if hint:
         lines.append("")
