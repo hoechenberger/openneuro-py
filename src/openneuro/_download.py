@@ -404,7 +404,14 @@ async def _download_file(
                 await asyncio.sleep(retry_backoff)
                 retry_backoff *= 2
             else:
-                short_reason = str(err) or "Unknown error"
+                if isinstance(err.__cause__, httpx.TimeoutException):
+                    short_reason = "Request timed out"
+                elif isinstance(err.__cause__, httpx.ConnectError):
+                    short_reason = "Could not connect (DNS or network error)"
+                elif err.__cause__ is not None:
+                    short_reason = str(err.__cause__) or "Error"
+                else:
+                    short_reason = str(err) or "Unknown error"
                 hint = _debug_hint_template.substitute(query_str=query_str)
                 raise _DownloadError(
                     reason=f"{short_reason} (failed after {max_retries} retries)",
@@ -455,9 +462,13 @@ async def _attempt_download(
                 if response.status_code in allowed_retry_codes:
                     raise _RetryableError(f"HTTP {response.status_code}")
                 if response.is_error:
-                    raise _RetryableError(
-                        f"HEAD request failed with HTTP "
-                        f"{response.status_code} for {remote_path}"
+                    raise _DownloadError(
+                        reason=(
+                            f"HEAD request failed with HTTP "
+                            f"{response.status_code} for {remote_path}"
+                        ),
+                        hint=_debug_hint_template.substitute(query_str=query_str),
+                        url=url,
                     )
                 headers = response.headers
         except allowed_retry_exceptions as exc:
@@ -544,9 +555,13 @@ async def _attempt_download(
                     elif response.status_code in allowed_retry_codes:
                         raise _RetryableError(f"HTTP {response.status_code}")
                     else:
-                        raise _RetryableError(
-                            f"HTTP {response.status_code} when trying to "
-                            f"download {remote_path}"
+                        raise _DownloadError(
+                            reason=(
+                                f"HTTP {response.status_code} when trying to "
+                                f"download {remote_path}"
+                            ),
+                            hint=_debug_hint_template.substitute(query_str=query_str),
+                            url=url,
                         )
 
                     await _retrieve_and_write_to_disk(
